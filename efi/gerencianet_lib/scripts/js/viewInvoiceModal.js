@@ -152,8 +152,8 @@ window.onload = function () {
         $("#telephoneBillet").mask("(00) 0000-00009");
         $("#telephoneCredit").mask("(00) 0000-00009");
         $("#cep").mask("99.999-999");
-        $("#numCartao").mask("0000 0000 0000 0000");
-        $("#numCartaoMobile").mask("0000 0000 0000 0000");
+        $("#numCartao").mask("0000 0000 0000 0000 000");
+        $("#numCartaoMobile").mask("0000 0000 0000 0000 000");
     }
 
 
@@ -195,68 +195,81 @@ window.onload = function () {
     }
 
 
-    /**
-     * Validação da bandeira do cartão
-     */
-    let brandOption = (element) => {
-        let bandeiraCartao = '';
-        var numCartao = element.val().replaceAll(' ', '');
-        var brand = "null";
-        if (numCartao.length >= 13) {
-            // MASTERCARD
-            var regexMastercard = /^(5[1-5][0-9]{14}|2(2[2-9][0-9]{12}|[3-6][0-9]{13}|7[01][0-9]{12}|720[0-9]{12}))$/;
+    function getCardNumberDigits(element) {
+        return element.val().replace(/\D/g, '');
+    }
 
-            var resMastercard = regexMastercard.exec(numCartao);
-            if (resMastercard) {
-                brand = "<img src='modules/gateways/efi/gerencianet_lib/images/mastercard.png' style='width:50px;' >";
-                bandeiraCartao = 'mastercard'
-            }
-            // ELO  
-            var regexELO = /^(4011|4312|4389|4514|4576|5041|5067|5090|6277|6362|65[0-9]{2})/;
+    function renderCardBrandIcon(cardBrand) {
+        const imageByBrand = {
+            mastercard: 'mastercard.png',
+            elo: 'elo.png',
+            amex: 'amex.png',
+            visa: 'visa.png'
+        };
+        const image = imageByBrand[cardBrand] || 'cartao.png';
+        $('#card').empty();
+        $('#card').append(`<img src='modules/gateways/efi/gerencianet_lib/images/${image}' style='width:50px;' >`);
+    }
 
-            var resELO = regexELO.exec(numCartao);
-            if (resELO) {
-                brand = "<img src='modules/gateways/efi/gerencianet_lib/images/elo.png' style='width:50px;' >";
-                bandeiraCartao = 'elo'
-            }
-            // AMEX 
-            var regexAmex = /^3[47][0-9]{13}$/;
-            var resAmex = regexAmex.exec(numCartao);
-            if (resAmex) {
-                brand = "<img src='modules/gateways/efi/gerencianet_lib/images/amex.png' style='width:50px;' >";
-                bandeiraCartao = 'amex'
-            }
-
-
-
-
-
-            // Visa 
-            var regexVisa = /^4[0-9]{12}(?:[0-9]{3})?(?:[0-9]{3})?$/;
-
-            var resVisa = regexVisa.exec(numCartao);
-            if (resVisa) {
-                brand = "<img src='modules/gateways/efi/gerencianet_lib/images/visa.png' style='width:50px;' >";
-                bandeiraCartao = 'visa'
-            }
-
-            // MOSTRA RESULTADO
-            if (brand != 'null') {
-                $('#card').empty();
-                $('#card').append(brand);
-            }
-
-            if (brand == 'null') {
-                $('#card').empty();
-                $('#card').append("<img src='modules/gateways/efi/gerencianet_lib/images/cartao.png' style='width:50px;' >");
-            }
-        } else {
-            $('#card').empty();
-            $('#card').append("<img src='modules/gateways/efi/gerencianet_lib/images/cartao.png' style='width:50px;' >");
+    function detectCardBrandByBin(cardNumber) {
+        if (!cardNumber || cardNumber.length < 6) {
+            return '';
         }
 
-        return bandeiraCartao;
+        const bin6 = cardNumber.substring(0, 6);
+        const first2 = parseInt(cardNumber.substring(0, 2), 10);
+        const first4 = parseInt(cardNumber.substring(0, 4), 10);
 
+        // ELO primeiro para evitar conflito com Visa em BINs iniciados por 4.
+        if (/^(4011|4312|4389|4514|4576|5041|5067|5090|6277|6362|65[0-9]{2})/.test(bin6)) {
+            return 'elo';
+        }
+
+        // Mastercard BIN ranges: 51-55 e 2221-2720.
+        if ((first2 >= 51 && first2 <= 55) || (first4 >= 2221 && first4 <= 2720)) {
+            return 'mastercard';
+        }
+
+        if (/^3[47]/.test(cardNumber)) {
+            return 'amex';
+        }
+
+        if (/^4/.test(cardNumber)) {
+            return 'visa';
+        }
+
+        return '';
+    }
+
+    function isValidCardLengthForBrand(cardNumber, cardBrand) {
+        const cardLength = cardNumber.length;
+        if (!cardBrand || cardLength < 13 || cardLength > 19) {
+            return false;
+        }
+
+        if (cardBrand == 'amex') {
+            return cardLength == 15;
+        }
+
+        if (cardBrand == 'mastercard' || cardBrand == 'elo') {
+            return cardLength == 16;
+        }
+
+        if (cardBrand == 'visa') {
+            return cardLength == 13 || cardLength == 16 || cardLength == 19;
+        }
+
+        return false;
+    }
+
+    /**
+     * Identificação de bandeira por BIN e atualização do ícone do cartão.
+     */
+    let brandOption = (element) => {
+        const numCartao = getCardNumberDigits(element);
+        const bandeiraCartao = detectCardBrandByBin(numCartao);
+        renderCardBrandIcon(bandeiraCartao);
+        return bandeiraCartao;
     }
 
 
@@ -265,9 +278,10 @@ window.onload = function () {
 
 
         if (i == 1) {
-            var numCartao = inputCartao.val().replaceAll(' ', '');
-            let brandOptionVerify = brandOption(inputCartao) != '' && brandOption(inputCartao) != undefined && brandOption(inputCartao) != null && numCartao.length >= 13;
-            let codSeguranca = $('#codSeguranca').val().length >= 3;
+            const numCartao = getCardNumberDigits(inputCartao);
+            const cardBrand = brandOption(inputCartao);
+            let brandOptionVerify = isValidCardLengthForBrand(numCartao, cardBrand);
+            let codSeguranca = cardBrand == 'amex' ? $('#codSeguranca').val().length == 4 : $('#codSeguranca').val().length >= 3;
             let mesVencimento = $('#mesVencimento option:selected').val().length == 2;
             let anoVencimento = $('#anoVencimento option:selected').val().length == 4;
             let numParcelas = $('#numParcelas option:selected').val().length > 0;
@@ -276,8 +290,8 @@ window.onload = function () {
 
                 $(".invalid-feedback").remove();
                 checkout.getPaymentToken({
-                    brand: brandOption(inputCartao),
-                    number: $('#numCartao').val().replaceAll(' ', ''),
+                    brand: cardBrand,
+                    number: numCartao,
                     cvv: $('#codSeguranca').val(),
                     expiration_month: $('#mesVencimento option:selected').val(),
                     expiration_year: $('#anoVencimento option:selected').val(),
@@ -309,17 +323,18 @@ window.onload = function () {
                 })
             }
         } else {
-            var numCartao = inputCartao.val().replaceAll(' ', '');
-            let brandOptionVerify = brandOption(inputCartao) != '' && brandOption(inputCartao) != undefined && brandOption(inputCartao) != null && numCartao.length >= 13;
-            let codSeguranca = $('#codSegurancaMobile').val().length >= 3;
+            const numCartao = getCardNumberDigits(inputCartao);
+            const cardBrand = brandOption(inputCartao);
+            let brandOptionVerify = isValidCardLengthForBrand(numCartao, cardBrand);
+            let codSeguranca = cardBrand == 'amex' ? $('#codSegurancaMobile').val().length == 4 : $('#codSegurancaMobile').val().length >= 3;
             let mesVencimento = $('#mesVencimentoMobile option:selected').val().length == 2;
             let anoVencimento = $('#anoVencimentoMobile option:selected').val().length == 4;
             let numParcelas = $('#numParcelasMobile option:selected').val().length > 0;
 
             if (brandOptionVerify && codSeguranca && mesVencimento && anoVencimento && numParcelas) {
                 checkout.getPaymentToken({
-                    brand: brandOption(inputCartao),
-                    number: $('#numCartaoMobile').val().replaceAll(' ', ''),
+                    brand: cardBrand,
+                    number: numCartao,
                     cvv: $('#codSegurancaMobile').val(),
                     expiration_month: $('#mesVencimentoMobile option:selected').val(),
                     expiration_year: $('#anoVencimentoMobile option:selected').val(),
@@ -1108,16 +1123,20 @@ window.onload = function () {
     function setPaymentToken(checkout) {
         let numCartaoLarge = $('#numCartao');
         let numCartaoMobile = $('#numCartaoMobile');
+        $('#numCartao, #numCartaoMobile').on('input', function () {
+            brandOption($(this));
+        });
         $('#numCartao').blur(() => {
-            var numCartao = $('#numCartao').val().replaceAll(' ', '');
+            var numCartao = getCardNumberDigits($('#numCartao'));
             var numInputCartao = $('#numCartao');
             var invoiceValue = Math.floor($('.invoice_value').val() * 100);
-            if (brandOption(numInputCartao) != '' && brandOption(numInputCartao) != undefined && brandOption(numInputCartao) != null && numCartao.length >= 13) {
-                checkout.getInstallments(invoiceValue, brandOption(numInputCartao), function (error, response) {
+            const cardBrand = brandOption(numInputCartao);
+            if (isValidCardLengthForBrand(numCartao, cardBrand)) {
+                checkout.getInstallments(invoiceValue, cardBrand, function (error, response) {
                     if (error) {
                         console.log(error)
                     } else {
-                        let installmentsOptions;
+                        let installmentsOptions = '';
 
                         for (let i = 0; i < response.data.installments.length; i++) {
                             let juros = (((response.data.installments[i].value / 100) - 0.01) * (i + 1)) > $('.invoice_value').val() ? 'com juros' : 'sem juros';
@@ -1140,7 +1159,7 @@ window.onload = function () {
         });
 
         $('#codSeguranca').keyup(() => {
-            if ($('#codSeguranca').val().length == 3) {
+            if ($('#codSeguranca').val().length >= 3) {
 
                 verifyPaymentToken(checkout, numCartaoLarge, 1);
             }
@@ -1153,19 +1172,20 @@ window.onload = function () {
             verifyPaymentToken(checkout, numCartaoLarge, 1);
         });
         $('#numCartaoMobile').blur(() => {
-            var numCartao = $('#numCartaoMobile').val().replaceAll(' ', '');
+            var numCartao = getCardNumberDigits($('#numCartaoMobile'));
             var numInputCartao = $('#numCartaoMobile');
             var invoiceValue = $('.invoice_value').val() * 100;
-            if (brandOption(numInputCartao) != '' && brandOption(numInputCartao) != undefined && brandOption(numInputCartao) != null && numCartao.length >= 13) {
-                checkout.getInstallments(invoiceValue, brandOption(numInputCartao), function (error, response) {
+            const cardBrand = brandOption(numInputCartao);
+            if (isValidCardLengthForBrand(numCartao, cardBrand)) {
+                checkout.getInstallments(invoiceValue, cardBrand, function (error, response) {
                     if (error) {
                         console.log(error)
                     } else {
-                        let installmentsOptions;
+                        let installmentsOptions = '';
                         for (let i = 0; i < response.data.installments.length; i++) {
                             installmentsOptions += `<option value="${i + 1}">${i + 1}x de R$${response.data.installments[i].currency}</option> `;
                         }
-                        if ($("#numParcelasMobile option:selected").val() == 1 || $("#numParcelasMobile option:selected").val() == '' || $("#numParcelas option:selected").val() == 'Insira os dados do seu cartão...') {
+                        if ($("#numParcelasMobile option:selected").val() == 1 || $("#numParcelasMobile option:selected").val() == '' || $("#numParcelasMobile option:selected").val() == 'Insira os dados do seu cartão...') {
                             $('#numParcelasMobile').html(installmentsOptions);
 
                         }
@@ -1178,7 +1198,7 @@ window.onload = function () {
             }
         });
         $('#codSegurancaMobile').keyup(() => {
-            if ($('#codSegurancaMobile').val().length == 3) {
+            if ($('#codSegurancaMobile').val().length >= 3) {
                 verifyPaymentToken(checkout, numCartaoMobile);
             }
 

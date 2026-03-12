@@ -371,31 +371,31 @@
             },
             "ENDPOINTS": {
                 "authorize": {
-                    "route": "/open-finance/oauth/token",
+                    "route": "/v1/oauth/token",
                     "method": "post"
                 },
                 "ofConfigUpdate": {
-                    "route": "/open-finance/config",
+                    "route": "/v1/config",
                     "method": "put"
                 },
                 "ofConfigDetail": {
-                    "route": "/open-finance/config",
+                    "route": "/v1/config",
                     "method": "get"
                 },
                 "ofListParticipants": {
-                    "route": "/open-finance/participantes",
+                    "route": "/v1/participantes",
                     "method": "get"
                 },
                 "ofStartPixPayment": {
-                    "route": "/open-finance/pagamentos/pix",
+                    "route": "/v1/pagamentos/pix",
                     "method": "post"
                 },
                 "ofDevolutionPix": {
-                    "route": "/open-finance/pagamentos/pix/:identificadorPagamento/devolver",
+                    "route": "/v1/pagamentos/pix/:identificadorPagamento/devolver",
                     "method": "post"
                 },
                 "ofListPixPayment": {
-                    "route": "/open-finance/pagamentos/pix",
+                    "route": "/v1/pagamentos/pix",
                     "method": "get"
                 }
             }
