@@ -1,0 +1,46 @@
+{
+	"name": "efipay/sdk-php-apis-efi",
+	"description": "SDK PHP para APIs Efi Pay",
+	"homepage": "https://github.com/efipay/sdk-php-apis-efi/",
+	"version": "1.19.0",
+	"type": "library",
+	"require": {
+		"php": ">=7.2.5",
+		"guzzlehttp/guzzle": "^7.0"
+	},
+	"support": {
+		"docs": "https://dev.sejaefi.com.br/",
+		"discord": "https://comunidade.sejaefi.com.br/"
+	},
+	"license": "MIT",
+	"authors": [
+		{
+			"name": "Guilherme Cota"
+		},
+		{
+			"name": "Jéssica Gava"
+		},
+		{
+			"name": "Sady Coimbra"
+		},
+		{
+			"name": "Matheus Rodrigues"
+		},
+		{
+			"name": "João Oliveira"
+		},
+		{
+			"name": "Paloma Brito"
+		}
+	],
+	"autoload": {
+		"psr-4": {
+			"Efi\\": "src/Efi"
+		}
+	},
+	"config": {
+		"sort-packages": true,
+		"optimize-autoloader": true,
+		"minimum-stability": "stable"
+	}
+}
