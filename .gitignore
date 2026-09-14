@@ -1,0 +1,9 @@
+# Notas internas de arquitetura -- não publicadas no repositório.
+/ARQUITETURA.md
+
+# SO / editor
+.DS_Store
+Thumbs.db
+*.swp
+
+# vendor/ é commitado propositalmente (facilita instalação sem Composer no servidor).
