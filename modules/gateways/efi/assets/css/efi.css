@@ -1,0 +1,71 @@
+.efi-boleto-box,
+.efi-pix-box {
+    border: 1px solid #e5e5e5;
+    border-radius: 6px;
+    padding: 16px;
+    margin: 10px 0;
+    font-family: inherit;
+}
+
+.efi-boleto-error p,
+.efi-pix-error p {
+    font-weight: bold;
+}
+
+.efi-card-form {
+    max-width: 420px;
+    margin: 12px auto;
+    font-family: -apple-system, "Segoe UI", Roboto, sans-serif;
+}
+
+.efi-card-form .efi-field {
+    margin-bottom: 12px;
+}
+
+.efi-card-form label {
+    display: block;
+    font-size: 13px;
+    margin-bottom: 4px;
+    color: #444;
+}
+
+.efi-card-form input[type="text"],
+.efi-card-form input[type="tel"] {
+    width: 100%;
+    padding: 8px 10px;
+    border: 1px solid #ccc;
+    border-radius: 4px;
+    font-size: 14px;
+    box-sizing: border-box;
+}
+
+.efi-card-form .efi-row {
+    display: flex;
+    gap: 10px;
+}
+
+.efi-card-form .efi-row .efi-field {
+    flex: 1;
+}
+
+.efi-submit {
+    width: 100%;
+    padding: 10px;
+    background: #f26522;
+    color: #fff;
+    border: none;
+    border-radius: 4px;
+    font-size: 15px;
+    cursor: pointer;
+}
+
+.efi-submit:disabled {
+    opacity: 0.6;
+    cursor: wait;
+}
+
+.efi-error {
+    color: #b00020;
+    font-size: 13px;
+    margin-bottom: 10px;
+}
