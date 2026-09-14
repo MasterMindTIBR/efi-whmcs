@@ -1,0 +1,81 @@
+name: Release
+
+# Push a version tag (e.g. 1.0.0 — no leading "v") to package the module and
+# publish a GitHub Release with the matching CHANGELOG.md section as the
+# release notes, plus the zip. Same convention as the author's other projects:
+#
+#   git tag 1.0.0 && git push origin 1.0.0
+#
+# The tag push must come from a real git identity, not the default
+# GITHUB_TOKEN — GitHub suppresses events created by GITHUB_TOKEN from
+# triggering other workflows, so a bot-pushed tag would never fire this.
+
+on:
+  push:
+    tags:
+      - "[0-9]+.[0-9]+.[0-9]+"
+
+env:
+  VERSION: ${{ github.ref_name }}
+
+permissions:
+  contents: write
+
+jobs:
+  lint:
+    name: Lint PHP
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: "8.1"
+      - name: Syntax check
+        run: |
+          find modules hooks -name "*.php" -print0 | xargs -0 -n1 php -l
+
+  create_release:
+    name: Create release
+    needs: lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Extract changelog section
+        run: |
+          python3 - <<'PY'
+          import os
+          import re
+
+          version = os.environ["VERSION"]
+          content = open("CHANGELOG.md", encoding="utf-8").read()
+          pattern = rf"^## \[{re.escape(version)}\].*?(?=^## \[|\Z)"
+          match = re.search(pattern, content, re.S | re.M)
+          notes = match.group(0).strip() if match else f"Release {version}"
+          with open("release_notes.md", "w", encoding="utf-8") as f:
+              f.write(notes)
+          PY
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$VERSION" \
+            --title "$VERSION" \
+            --notes-file release_notes.md \
+            --verify-tag
+
+  package:
+    name: Package & upload module zip
+    needs: create_release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build zip
+        run: |
+          mkdir -p /tmp/pkg
+          cp -r modules hooks README.md LICENSE /tmp/pkg/
+          cd /tmp/pkg
+          zip -r "$GITHUB_WORKSPACE/efi-whmcs-${VERSION}.zip" .
+      - name: Upload to release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release upload "$VERSION" "efi-whmcs-${VERSION}.zip" --clobber
