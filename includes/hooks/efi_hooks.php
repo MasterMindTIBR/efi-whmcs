@@ -3,8 +3,8 @@
 /**
  * Hooks compartilhados pelos módulos de gateway Efí.
  *
- * Instalar em /hooks/efi_hooks.php (raiz do WHMCS -- NÃO dentro de modules/gateways). O WHMCS
- * carrega automaticamente todo arquivo PHP colocado em /hooks/.
+ * Instalar em /includes/hooks/efi_hooks.php (raiz do WHMCS -- NÃO dentro de modules/gateways).
+ * O WHMCS carrega automaticamente todo arquivo PHP colocado em /includes/hooks/.
  *
  * Responsabilidades:
  *  - InvoiceCancelled: cancela o boleto Efí em aberto associado à fatura (efi_boleto).
@@ -16,7 +16,7 @@ if (!defined('WHMCS')) {
     die('This file cannot be accessed directly');
 }
 
-require_once __DIR__ . '/../modules/gateways/efi/vendor/autoload.php';
+require_once __DIR__ . '/../../modules/gateways/efi/vendor/autoload.php';
 
 App::load_function('gateway');
 App::load_function('invoice');

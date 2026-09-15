@@ -29,7 +29,8 @@ cifrado e recorrência automática.
 
 ## Requisitos
 
-- WHMCS 8.x, PHP >= 8.1.
+- WHMCS 8.x ou 9.x, PHP >= 8.1 (compatível com o PHP 8.1/8.2 usado pelo WHMCS 8.x e com o PHP
+  8.2/8.3 exigido pelo WHMCS 9.x).
 - Conta Efí com API de Cobranças (boleto/cartão) e, se for usar Pix, API Pix + certificado
   `.p12`/`.pem`.
 - Um Campo Personalizado de Cliente para CPF/CNPJ (a maioria das instalações WHMCS brasileiras já
@@ -38,7 +39,7 @@ cifrado e recorrência automática.
 ## Instalação
 
 1. Extraia o pacote da [release](../../releases) mais recente na raiz da sua instalação WHMCS,
-   mantendo a mesma estrutura de pastas do repositório (`modules/`, `hooks/`). O `vendor/` do SDK
+   mantendo a mesma estrutura de pastas do repositório (`modules/`, `includes/`). O `vendor/` do SDK
    já vem pronto, não é necessário rodar Composer.
 2. Em **Configurações > Pagamentos > Gateways de Pagamento**, ative **Efí - Boleto Bancário**,
    **Efí - Pix** e/ou **Efí - Cartão de Crédito** — cada um separadamente, com a possibilidade de
@@ -65,7 +66,7 @@ precisam ser recadastrados pelo cliente.
 
 ### Hooks e recorrência
 
-Confirme que `hooks/efi_hooks.php` ficou na raiz do WHMCS (não em `modules/gateways/`). Sem ele:
+Confirme que `includes/hooks/efi_hooks.php` ficou na raiz do WHMCS (não em `modules/gateways/`). Sem ele:
 cancelamento de fatura não cancela o boleto, vencimento não realinha, e a reconciliação diária não
 roda.
 
@@ -84,7 +85,8 @@ receba o link/código de pagamento direto no email.
 
 - **[Jung](https://github.com/junglivre)** — reescrita e arquitetura deste módulo.
 - **[Efí Pay](https://github.com/efipay)** — SDK oficial `sdk-php-apis-efi` sobre o qual este
-  módulo é construído.
+  módulo é construído. Os ícones de ativação em `modules/gateways/efi_boleto/`,
+  `modules/gateways/efi_pix/` e `modules/gateways/efi_cartao/` usam a marca oficial da Efí Pay.
 - **[Marcelo Machado](https://github.com/marcelo-machado-efi)** — autor do módulo WHMCS original da Efí, que serviu de referência de
   comportamento e requisitos de negócio para esta reescrita.
 

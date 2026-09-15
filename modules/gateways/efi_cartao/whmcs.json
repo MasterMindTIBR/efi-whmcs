@@ -1,0 +1,31 @@
+{
+  "schema": "1.0",
+  "type": "whmcs-gateways",
+  "name": "efi_cartao",
+  "license": "MIT",
+  "category": "payments",
+  "description": {
+    "name": "Efí - Cartão de Crédito",
+    "tagline": "Receba pagamentos Efí com cartão de crédito no WHMCS.",
+    "long": "Módulo de cartão de crédito Efí com tokenização no navegador e cobrança recorrente pelo WHMCS.",
+    "features": [
+      "Tokenização de cartão no navegador",
+      "Cobrança recorrente pelo WHMCS",
+      "Suporte a 3D Secure"
+    ]
+  },
+  "logo": {
+    "filename": "logo.png"
+  },
+  "support": {
+    "homepage": "https://github.com/junglivre/efi-whmcs",
+    "learn_more": "https://github.com/junglivre/efi-whmcs#readme",
+    "docs_url": "https://github.com/junglivre/efi-whmcs#readme"
+  },
+  "authors": [
+    {
+      "name": "Jung",
+      "homepage": "https://github.com/junglivre"
+    }
+  ]
+}

@@ -2,7 +2,7 @@
 
 /**
  * Endpoint do botão "Testar Conexão" injetado na tela de configuração de cada gateway (ver hook
- * AdminAreaFooterOutput em hooks/efi_hooks.php). Valida autenticação com a Efí e, no caso do
+ * AdminAreaFooterOutput em includes/hooks/efi_hooks.php). Valida autenticação com a Efí e, no caso do
  * Pix, o certificado/registro do webhook -- sem alterar nenhuma configuração.
  */
 

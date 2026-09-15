@@ -32,7 +32,7 @@ jobs:
           php-version: "8.1"
       - name: Syntax check
         run: |
-          find modules hooks -name "*.php" -print0 | xargs -0 -n1 php -l
+          find modules includes/hooks -name "*.php" -print0 | xargs -0 -n1 php -l
 
   create_release:
     name: Create release
@@ -72,7 +72,7 @@ jobs:
       - name: Build zip
         run: |
           mkdir -p /tmp/pkg
-          cp -r modules hooks README.md LICENSE /tmp/pkg/
+          cp -r modules includes README.md LICENSE /tmp/pkg/
           cd /tmp/pkg
           zip -r "$GITHUB_WORKSPACE/efi-whmcs-${VERSION}.zip" .
       - name: Upload to release

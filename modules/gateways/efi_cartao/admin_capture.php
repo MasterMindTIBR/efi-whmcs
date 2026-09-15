@@ -2,7 +2,7 @@
 
 /**
  * Endpoint chamado pelo botão "Tentar Capturar Pagamento (Efí)" injetado na página de fatura do
- * admin (ver hook AdminInvoicesControlsOutput em hooks/efi_hooks.php). Apenas encapsula a ação
+ * admin (ver hook AdminInvoicesControlsOutput em includes/hooks/efi_hooks.php). Apenas encapsula a ação
  * nativa `CapturePayment` da API local do WHMCS -- não reimplementa lógica de cobrança própria.
  */
 
