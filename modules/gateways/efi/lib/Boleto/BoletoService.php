@@ -69,8 +69,9 @@ final class BoletoService
             throw new \RuntimeException('A Efí não retornou um identificador de cobrança válido.');
         }
 
-        $barcode = $data['payment']['banking_billet']['barcode'] ?? null;
-        $link = $data['payment']['banking_billet']['link'] ?? null;
+        $billet = $this->extractBilletData($data);
+        $barcode = $billet['barcode'];
+        $link = $billet['link'];
 
         $localId = ChargeRepository::create([
             'invoice_id' => $invoiceId,
@@ -159,15 +160,54 @@ final class BoletoService
     private function presentExisting(object $charge): array
     {
         $metadata = json_decode((string) $charge->metadata, true) ?: [];
+        $barcode = $metadata['barcode'] ?? null;
+        $link = $metadata['link'] ?? null;
+
+        if ($barcode === null || $link === null) {
+            try {
+                $response = $this->api->detailCharge(['id' => $charge->efi_charge_id]);
+                $data = $response['data'] ?? $response;
+                $billet = $this->extractBilletData($data);
+                $barcode ??= $billet['barcode'];
+                $link ??= $billet['link'];
+                $metadata['barcode'] = $barcode;
+                $metadata['link'] = $link;
+                ChargeRepository::updateMetadata($charge->id, json_encode($metadata) ?: '{}');
+            } catch (EfiException $e) {
+                GatewayLog::error('efi_boleto', $this->gatewayParams, 'Falha ao recuperar boleto existente (' . $e->code . ')', [
+                    'charge_id' => $charge->efi_charge_id,
+                    'error' => $e->errorDescription,
+                ]);
+            }
+        }
 
         return [
             'charge_id' => $charge->efi_charge_id,
             'status' => $charge->status,
             'expire_at' => $metadata['expire_at'] ?? null,
-            'barcode' => $metadata['barcode'] ?? null,
-            'link' => $metadata['link'] ?? null,
+            'barcode' => $barcode,
+            'link' => $link,
             'local_id' => $charge->id,
             'existing' => true,
+        ];
+    }
+
+    /**
+     * A API Efí devolve barcode/link diretamente em data; aceita também o formato aninhado para
+     * compatibilidade com respostas antigas do SDK.
+     *
+     * @return array{barcode: ?string, link: ?string}
+     */
+    private function extractBilletData(array $data): array
+    {
+        $payment = $data['payment'] ?? null;
+        $nested = is_array($payment) && is_array($payment['banking_billet'] ?? null)
+            ? $payment['banking_billet']
+            : [];
+
+        return [
+            'barcode' => isset($data['barcode']) ? (string) $data['barcode'] : ($nested['barcode'] ?? null),
+            'link' => isset($data['link']) ? (string) $data['link'] : ($nested['link'] ?? null),
         ];
     }
 

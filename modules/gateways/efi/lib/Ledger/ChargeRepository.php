@@ -87,4 +87,14 @@ final class ChargeRepository
             'updated_at' => date('Y-m-d H:i:s'),
         ]);
     }
+
+    public static function updateMetadata(int $id, string $metadata): void
+    {
+        Schema::ensure();
+
+        Capsule::table('mod_efi_charges')->where('id', $id)->update([
+            'metadata' => $metadata,
+            'updated_at' => date('Y-m-d H:i:s'),
+        ]);
+    }
 }

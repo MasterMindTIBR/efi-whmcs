@@ -16,6 +16,7 @@ use EfiWhmcs\Support\EfiClientFactory;
 use EfiWhmcs\Support\GatewayLog;
 use WHMCS\Database\Capsule;
 
+App::load_function('gateway');
 App::load_function('invoice');
 
 header('Content-Type: application/json');

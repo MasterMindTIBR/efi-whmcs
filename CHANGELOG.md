@@ -26,3 +26,8 @@ Reescrita completa do módulo Efí para WHMCS a partir do zero, usando o SDK ofi
   para desativar e renovar uma cobrança Pix.
 - CPF/CNPJ resolvido automaticamente do Campo Personalizado de Cliente.
 - Link do boleto/Pix disponível como merge field para os templates de email do WHMCS.
+
+### Corrigido
+
+- Carregamento das funções de gateway do WHMCS no processamento de cartão tokenizado.
+- Extração e recuperação do link e da linha digitável de boletos emitidos pela API Efí.
