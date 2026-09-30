@@ -1,9 +1,9 @@
 # Efí para WHMCS
 
 Módulos de gateway de pagamento Efí para WHMCS, reescritos do zero sobre o SDK oficial
-[`efipay/sdk-php-apis-efi`](https://github.com/efipay/sdk-php-apis-efi): boleto, Pix e cartão de
-crédito como três gateways independentes, com checkout transparente (sem popup), cartão salvo
-cifrado e recorrência automática.
+[`efipay/sdk-php-apis-efi`](https://github.com/efipay/sdk-php-apis-efi): boleto, Pix imediato,
+Pix Automático e cartão de crédito como quatro gateways independentes, com checkout transparente,
+cartão salvo cifrado e recorrência automática.
 
 ## Recursos
 
@@ -16,6 +16,8 @@ cifrado e recorrência automática.
   cron/tabela própria, sem duplo calendário de cobrança.
 - **Pagamento recusado não trava a fatura**: o cliente pode tentar de novo ou trocar de cartão
   livremente (fluxo nativo de métodos de pagamento do WHMCS).
+- **Pix Automático**: a primeira fatura recebe o pagamento imediato e a autorização recorrente
+  em um único Pix copia e cola; as faturas seguintes são agendadas pela API Efí.
 - **Parcelamento** consultado em tempo real na conta Efí.
 - **Callback robusto**: idempotência real, processa todos os eventos em ordem, com reconciliação
   diária como rede de segurança.
@@ -24,15 +26,16 @@ cifrado e recorrência automática.
 - **CPF/CNPJ automático** a partir do Campo Personalizado de Cliente do WHMCS.
 - **Botões de admin**: capturar pagamento manualmente e testar conexão com a Efí.
 - **Link do boleto/Pix nos emails**: disponível como merge field para os templates do WHMCS.
-- Três módulos independentes — ative/restrinja boleto, Pix e cartão por grupo de produto
-  separadamente.
+- Quatro módulos independentes — ative/restrinja boleto, Pix imediato, Pix Automático e cartão por
+  grupo de produto separadamente.
 
 ## Requisitos
 
 - WHMCS 8.x ou 9.x, PHP >= 8.1 (compatível com o PHP 8.1/8.2 usado pelo WHMCS 8.x e com o PHP
   8.2/8.3 exigido pelo WHMCS 9.x).
-- Conta Efí com API de Cobranças (boleto/cartão) e, se for usar Pix, API Pix + certificado
-  `.p12`/`.pem`.
+- Conta Efí com API de Cobranças (boleto/cartão) e API Pix + certificado `.p12`/`.pem`. Pix
+  Automático exige Conta Digital Efí Empresas e os escopos `rec.*`, `cobr.*`,
+  `payloadlocationrec.*`, `webhookrec.*` e `webhookcobr.*` na aplicação.
 - Um Campo Personalizado de Cliente para CPF/CNPJ (a maioria das instalações WHMCS brasileiras já
   tem um — por padrão o módulo procura por `CPF/CNPJ`, mas o nome é configurável).
 
@@ -42,8 +45,8 @@ cifrado e recorrência automática.
    mantendo a mesma estrutura de pastas do repositório (`modules/`, `includes/`). O `vendor/` do SDK
    já vem pronto, não é necessário rodar Composer.
 2. Em **Configurações > Pagamentos > Gateways de Pagamento**, ative **Efí - Boleto Bancário**,
-   **Efí - Pix** e/ou **Efí - Cartão de Crédito** — cada um separadamente, com a possibilidade de
-   restringir por grupo de produto.
+   **Efí - Pix**, **Efí - Pix Automático** e/ou **Efí - Cartão de Crédito**. Cada gateway pode
+   ser restringido por grupo de produto.
 3. Preencha Client ID/Client Secret (Menu API > Aplicações na sua conta Efí) e o Identificador de
    Conta (Menu API > Introdução) em cada módulo ativado.
 
@@ -71,12 +74,29 @@ precisam ser recadastrados pelo cliente.
    **Gerar nova cobrança Pix**. A ação desativa primeiro a cobrança ativa anterior; não está
    disponível para faturas pagas, canceladas ou estornadas.
 
+### Pix Automático
+
+1. Ative **Efí - Pix Automático**, preencha a chave/certificado Pix e salve. O módulo cadastra
+   os webhooks de Pix imediato, recorrência e cobrança recorrente na Efí.
+2. Restrinja o gateway a produtos com o ciclo configurado em **Periodicidade autorizada**. A
+   primeira fatura mostra o Pix copia e cola da jornada 3: o cliente paga a fatura atual e aceita
+   a autorização no aplicativo do banco.
+3. O módulo vincula uma autorização a cada cliente. Após o banco aprová-la, o hook
+   `InvoiceCreated` cria uma CobR para cada nova fatura não paga com esse gateway.
+4. A autorização fixa o valor recorrente. Se uma fatura futura tiver outro total, o módulo não
+   cria a cobrança e registra a necessidade de uma nova autorização. O cliente deve cancelar a
+   autorização anterior no banco; após o callback `CANCELADA`, ele pode escolher Pix Automático
+   em uma nova fatura.
+5. O webhook comum de Pix aceita os segredos de Pix imediato e Pix Automático. Você pode usar a
+   mesma chave Pix nos dois gateways.
+
+
 
 ### Hooks e recorrência
 
 Confirme que `includes/hooks/efi_hooks.php` ficou na raiz do WHMCS (não em `modules/gateways/`). Sem ele:
-cancelamento de fatura não cancela o boleto, vencimento não realinha, alterações de valor não são
-revisadas no Pix e a reconciliação diária não roda.
+cancelamento de fatura não cancela o boleto/CobR, vencimento não realinha, CobRs não são criadas
+quando a fatura nasce e a reconciliação diária não roda.
 
 Para cobrança automática de cartão, apenas ative a Cobrança Automática de Faturas do próprio
 WHMCS (Configurações > Automação) — o módulo não precisa de nenhuma configuração adicional para

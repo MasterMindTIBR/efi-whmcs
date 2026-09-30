@@ -3,6 +3,16 @@
 Todas as mudanças notáveis deste projeto são documentadas aqui.
 Formato baseado em [Keep a Changelog](https://keepachangelog.com/pt-BR/1.0.0/).
 
+## [Unreleased]
+
+### Adicionado
+
+- Gateway `efi_pix_automatico`: jornada 3 da Efí, autorização na primeira fatura e CobR para
+  faturas futuras do mesmo cliente.
+- Webhooks de recorrência e cobrança Pix Automático com consulta autoritativa, idempotência e
+  reconciliação diária.
+- Cancelamento da CobR pendente ao cancelar a fatura no WHMCS.
+
 ## [1.0.0]
 
 Reescrita completa do módulo Efí para WHMCS a partir do zero, usando o SDK oficial

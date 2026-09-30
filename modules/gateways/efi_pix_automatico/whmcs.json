@@ -1,0 +1,28 @@
+{
+  "schema": "1.0",
+  "type": "whmcs-gateways",
+  "name": "efi_pix_automatico",
+  "license": "MIT",
+  "category": "payments",
+  "description": {
+    "name": "Efí - Pix Automático",
+    "tagline": "Cobranças recorrentes por Pix Automático no WHMCS.",
+    "long": "Autoriza o Pix Automático na primeira fatura e agenda as próximas cobranças recorrentes na Efí.",
+    "features": [
+      "Jornada 3: primeira fatura e autorização em um único Pix",
+      "Cobranças futuras vinculadas às faturas WHMCS",
+      "Webhooks autenticados e reconciliação diária"
+    ]
+  },
+  "support": {
+    "homepage": "https://github.com/junglivre/efi-whmcs",
+    "learn_more": "https://github.com/junglivre/efi-whmcs#readme",
+    "docs_url": "https://github.com/junglivre/efi-whmcs#readme"
+  },
+  "authors": [
+    {
+      "name": "Jung",
+      "homepage": "https://github.com/junglivre"
+    }
+  ]
+}

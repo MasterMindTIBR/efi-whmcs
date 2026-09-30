@@ -21,22 +21,56 @@ require_once __DIR__ . '/../../modules/gateways/efi/vendor/autoload.php';
 App::load_function('gateway');
 
 use EfiWhmcs\Boleto\BoletoService;
+use EfiWhmcs\PixAutomatic\PixAutomaticService;
 use EfiWhmcs\Support\EfiClientFactory;
 use EfiWhmcs\Support\GatewayLog;
 use WHMCS\Database\Capsule;
 
 add_hook('InvoiceCancelled', 1, function ($vars) {
-    $gatewayParams = getGatewayVariables('efi_boleto');
+    $invoiceId = (int) ($vars['invoiceid'] ?? 0);
+    $boletoParams = getGatewayVariables('efi_boleto');
 
-    if (!$gatewayParams['type']) {
+    if (!empty($boletoParams['type'])) {
+        try {
+            $api = EfiClientFactory::make($boletoParams);
+            (new BoletoService($api, $boletoParams))->cancel($invoiceId);
+        } catch (\Throwable $e) {
+            GatewayLog::error('efi_boleto', $boletoParams, 'Falha ao cancelar boleto no hook InvoiceCancelled', $e->getMessage());
+        }
+    }
+
+    $automaticParams = getGatewayVariables(PixAutomaticService::GATEWAY);
+    if (!empty($automaticParams['type'])) {
+        try {
+            $api = EfiClientFactory::make($automaticParams, true);
+            (new PixAutomaticService($api, $automaticParams))->cancelInvoiceCharge($invoiceId);
+        } catch (\Throwable $e) {
+            GatewayLog::error(PixAutomaticService::GATEWAY, $automaticParams, 'Falha ao cancelar cobrança Pix Automático no hook InvoiceCancelled', $e->getMessage());
+        }
+    }
+});
+
+add_hook('InvoiceCreated', 1, function ($vars) {
+    $invoiceId = (int) ($vars['invoiceid'] ?? 0);
+    $invoice = Capsule::table('tblinvoices')->where('id', $invoiceId)->first(['id', 'userid', 'paymentmethod', 'status', 'total', 'duedate']);
+
+    if ($invoice === null || $invoice->paymentmethod !== PixAutomaticService::GATEWAY || $invoice->status !== 'Unpaid') {
+        return;
+    }
+
+    $gatewayParams = getGatewayVariables(PixAutomaticService::GATEWAY);
+    if (empty($gatewayParams['type'])) {
         return;
     }
 
     try {
-        $api = EfiClientFactory::make($gatewayParams);
-        (new BoletoService($api, $gatewayParams))->cancel((int) $vars['invoiceid']);
+        $api = EfiClientFactory::make($gatewayParams, true);
+        $message = (new PixAutomaticService($api, $gatewayParams))->scheduleInvoice($invoice);
+        if ($message !== null) {
+            logTransaction(PixAutomaticService::GATEWAY, ['invoice_id' => $invoiceId], $message);
+        }
     } catch (\Throwable $e) {
-        GatewayLog::error('efi_boleto', $gatewayParams, 'Falha ao cancelar boleto no hook InvoiceCancelled', $e->getMessage());
+        GatewayLog::error(PixAutomaticService::GATEWAY, $gatewayParams, 'Falha ao agendar Pix Automático no hook InvoiceCreated', $e->getMessage());
     }
 });
 
@@ -123,6 +157,16 @@ add_hook('DailyCronJob', 1, function () {
     if ($stalePix->isNotEmpty()) {
         efi_reconcile_pix($stalePix);
     }
+
+    EfiWhmcs\PixAutomatic\Schema::ensure();
+    $staleAutomaticPix = Capsule::table('mod_efi_pix_auto_charges')
+        ->whereIn('status', ['creating', 'CRIADA', 'ATIVA'])
+        ->where('updated_at', '<', $staleSince)
+        ->get();
+
+    if ($staleAutomaticPix->isNotEmpty()) {
+        efi_reconcile_pix_automatico($staleAutomaticPix);
+    }
 });
 
 function efi_reconcile_boleto($charges): void
@@ -191,6 +235,57 @@ function efi_reconcile_pix($charges): void
             }
         } catch (\Throwable $e) {
             GatewayLog::error('efi_pix', $gatewayParams, 'Reconciliação diária falhou para txid ' . $charge->efi_charge_id, $e->getMessage());
+        }
+    }
+}
+
+function efi_reconcile_pix_automatico($charges): void
+{
+    $gatewayParams = getGatewayVariables(PixAutomaticService::GATEWAY);
+    if (empty($gatewayParams['type'])) {
+        return;
+    }
+
+    try {
+        $api = EfiClientFactory::make($gatewayParams, true);
+    } catch (\Throwable $e) {
+        GatewayLog::error(PixAutomaticService::GATEWAY, $gatewayParams, 'Reconciliação diária: falha ao montar client', $e->getMessage());
+        return;
+    }
+
+    foreach ($charges as $charge) {
+        try {
+            $detail = $api->pixDetailAutomaticCharge(['txid' => $charge->efi_charge_id]);
+            $status = (string) ($detail['status'] ?? '');
+            $attempts = $detail['tentativas'] ?? [];
+            $settled = null;
+
+            foreach ($attempts as $attempt) {
+                if (in_array($attempt['status'] ?? null, ['LIQUIDADA', 'CONCLUIDA'], true)) {
+                    $settled = $attempt;
+                    break;
+                }
+            }
+
+            if ($status === 'CONCLUIDA' && $settled !== null && !empty($settled['endToEndId'])) {
+                $e2eId = (string) $settled['endToEndId'];
+                if (!EfiWhmcs\PixAutomatic\Repository::tryClaimEvent('charge', (int) $charge->id, $e2eId, $charge->status, $status)) {
+                    continue;
+                }
+
+                $invoiceId = checkCbInvoiceID((int) $charge->invoice_id, PixAutomaticService::GATEWAY);
+                checkCbTransID($e2eId);
+                addInvoicePayment($invoiceId, $e2eId, EfiWhmcs\Support\Money::toReais((int) $charge->amount_cents), 0, PixAutomaticService::GATEWAY);
+                EfiWhmcs\PixAutomatic\Repository::updateCharge((int) $charge->id, [
+                    'status' => $status,
+                    'metadata' => json_encode(['e2e_id' => $e2eId]) ?: '{}',
+                ]);
+                logTransaction(PixAutomaticService::GATEWAY, ['invoice_id' => $invoiceId, 'txid' => $charge->efi_charge_id, 'e2eId' => $e2eId], 'Reconciliação diária detectou cobrança Pix Automático concluída');
+            } elseif ($status !== '' && $status !== $charge->status) {
+                EfiWhmcs\PixAutomatic\Repository::updateCharge((int) $charge->id, ['status' => $status]);
+            }
+        } catch (\Throwable $e) {
+            GatewayLog::error(PixAutomaticService::GATEWAY, $gatewayParams, 'Reconciliação diária falhou para cobrança Pix Automático ' . $charge->efi_charge_id, $e->getMessage());
         }
     }
 }
