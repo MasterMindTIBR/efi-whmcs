@@ -64,11 +64,19 @@ precisam ser recadastrados pelo cliente.
    [dev.efipay.com.br/docs/api-pix/webhooks](https://dev.efipay.com.br/docs/api-pix/webhooks).
    Isso é feito no Nginx/Apache, não neste módulo.
 
+4. Se o total de uma fatura com Pix ativo for alterado, o módulo revisa automaticamente o valor
+   da cobrança na Efí. Pix imediato conta sua expiração a partir da emissão, não da data de
+   vencimento da fatura.
+5. Para renovar um QR Code expirado — ou emitir outro antes disso — abra a fatura no admin e use
+   **Gerar nova cobrança Pix**. A ação desativa primeiro a cobrança ativa anterior; não está
+   disponível para faturas pagas, canceladas ou estornadas.
+
+
 ### Hooks e recorrência
 
 Confirme que `includes/hooks/efi_hooks.php` ficou na raiz do WHMCS (não em `modules/gateways/`). Sem ele:
-cancelamento de fatura não cancela o boleto, vencimento não realinha, e a reconciliação diária não
-roda.
+cancelamento de fatura não cancela o boleto, vencimento não realinha, alterações de valor não são
+revisadas no Pix e a reconciliação diária não roda.
 
 Para cobrança automática de cartão, apenas ative a Cobrança Automática de Faturas do próprio
 WHMCS (Configurações > Automação) — o módulo não precisa de nenhuma configuração adicional para

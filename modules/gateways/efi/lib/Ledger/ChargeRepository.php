@@ -67,4 +67,24 @@ final class ChargeRepository
             'updated_at' => date('Y-m-d H:i:s'),
         ]);
     }
+
+    public static function replacePixCharge(
+        int $id,
+        string $efiChargeId,
+        ?string $efiLocId,
+        string $status,
+        int $amountCents,
+        string $metadata
+    ): void {
+        Schema::ensure();
+
+        Capsule::table('mod_efi_charges')->where('id', $id)->update([
+            'efi_charge_id' => $efiChargeId,
+            'efi_loc_id' => $efiLocId,
+            'status' => $status,
+            'amount_cents' => $amountCents,
+            'metadata' => $metadata,
+            'updated_at' => date('Y-m-d H:i:s'),
+        ]);
+    }
 }

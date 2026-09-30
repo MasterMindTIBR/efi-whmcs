@@ -22,5 +22,7 @@ Reescrita completa do módulo Efí para WHMCS a partir do zero, usando o SDK ofi
 - Realinhamento consistente de vencimento do boleto quando a fatura muda de data.
 - Suporte a parcelamento (consulta de parcelas da Efí) no checkout de cartão.
 - Botão de captura manual de pagamento e teste de conexão no admin.
+- Revisão automática do valor de Pix ativo quando o total da fatura muda e controle administrativo
+  para desativar e renovar uma cobrança Pix.
 - CPF/CNPJ resolvido automaticamente do Campo Personalizado de Cliente.
 - Link do boleto/Pix disponível como merge field para os templates de email do WHMCS.

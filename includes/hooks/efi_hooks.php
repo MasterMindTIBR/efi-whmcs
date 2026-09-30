@@ -8,8 +8,8 @@
  *
  * Responsabilidades:
  *  - InvoiceCancelled: cancela o boleto Efí em aberto associado à fatura (efi_boleto).
- *  - UpdateInvoiceTotal: realinha o vencimento do boleto quando o vencimento da fatura muda
- *    (efi_boleto) -- ver docs/ARQUITETURA.md §1.7. Cartão/Pix não têm vencimento a realinhar.
+ *  - UpdateInvoiceTotal: realinha o vencimento do boleto e revisa o valor de Pix ativo quando o
+ *    total da fatura muda.
  */
 
 if (!defined('WHMCS')) {
@@ -42,28 +42,51 @@ add_hook('InvoiceCancelled', 1, function ($vars) {
 });
 
 add_hook('UpdateInvoiceTotal', 1, function ($vars) {
-    $gatewayParams = getGatewayVariables('efi_boleto');
+    $invoiceId = (int) ($vars['invoiceid'] ?? 0);
 
-    if (!$gatewayParams['type']) {
+    if ($invoiceId <= 0) {
         return;
     }
 
-    $invoiceId = (int) $vars['invoiceid'];
     $invoice = Capsule::table('tblinvoices')->where('id', $invoiceId)->first();
 
-    if ($invoice === null || $invoice->status === 'Paid' || $invoice->status === 'Cancelled') {
+    if ($invoice === null || in_array($invoice->status, ['Paid', 'Cancelled', 'Refunded'], true)) {
+        return;
+    }
+
+    $boletoParams = getGatewayVariables('efi_boleto');
+
+    if ($boletoParams['type']) {
+        try {
+            $api = EfiClientFactory::make($boletoParams);
+            $message = (new BoletoService($api, $boletoParams))->realignDueDate($invoiceId, $invoice->duedate);
+
+            if ($message !== null) {
+                logTransaction('efi_boleto', ['invoice_id' => $invoiceId, 'new_duedate' => $invoice->duedate], $message);
+            }
+        } catch (\Throwable $e) {
+            GatewayLog::error('efi_boleto', $boletoParams, 'Falha ao realinhar vencimento no hook UpdateInvoiceTotal', $e->getMessage());
+        }
+    }
+
+    $pixParams = getGatewayVariables('efi_pix');
+
+    if (!$pixParams['type'] || $invoice->paymentmethod !== 'efi_pix') {
         return;
     }
 
     try {
-        $api = EfiClientFactory::make($gatewayParams);
-        $message = (new BoletoService($api, $gatewayParams))->realignDueDate($invoiceId, $invoice->duedate);
+        $api = EfiClientFactory::make($pixParams, true);
+        $message = (new EfiWhmcs\Pix\PixService($api, $pixParams))->synchronizeAmount(
+            $invoiceId,
+            EfiWhmcs\Support\Money::toCents($invoice->total)
+        );
 
         if ($message !== null) {
-            logTransaction('efi_boleto', ['invoice_id' => $invoiceId, 'new_duedate' => $invoice->duedate], $message);
+            logTransaction('efi_pix', ['invoice_id' => $invoiceId, 'total' => $invoice->total], $message);
         }
     } catch (\Throwable $e) {
-        GatewayLog::error('efi_boleto', $gatewayParams, 'Falha ao realinhar vencimento no hook UpdateInvoiceTotal', $e->getMessage());
+        GatewayLog::error('efi_pix', $pixParams, 'Falha ao revisar Pix no hook UpdateInvoiceTotal', $e->getMessage());
     }
 });
 
@@ -170,18 +193,9 @@ function efi_reconcile_pix($charges): void
 }
 
 /**
- * Botão "Tentar Capturar Pagamento (Efí)" na página de fatura do admin, para faturas com
- * cartão Efí salvo. Encapsula a ação nativa `CapturePayment` da API local -- ver
- * modules/gateways/efi_cartao/admin_capture.php. Requer confirmação em ambiente real (nome
- * exato da chave de invoiceid em $vars pode variar entre versões do WHMCS).
+ * Controles Efí na página de fatura do admin: captura de cartão e renovação segura de Pix.
  */
 add_hook('AdminInvoicesControlsOutput', 1, function ($vars) {
-    $gatewayParams = getGatewayVariables('efi_cartao');
-
-    if (!$gatewayParams['type']) {
-        return '';
-    }
-
     $invoiceId = (int) ($vars['invoiceid'] ?? $vars['id'] ?? 0);
 
     if ($invoiceId <= 0) {
@@ -189,29 +203,64 @@ add_hook('AdminInvoicesControlsOutput', 1, function ($vars) {
     }
 
     $systemUrl = rtrim((string) \WHMCS\Config\Setting::getValue('SystemURL'), '/');
+    $controls = '';
+    $cardParams = getGatewayVariables('efi_cartao');
 
-    return '<button type="button" class="btn btn-default btn-sm" id="efiCaptureBtn' . $invoiceId . '">Tentar Capturar Pagamento (Efí)</button>
-    <script>
-    (function () {
-        var btn = document.getElementById("efiCaptureBtn' . $invoiceId . '");
-        if (!btn) { return; }
-        btn.addEventListener("click", function () {
-            btn.disabled = true;
-            fetch("' . $systemUrl . '/modules/gateways/efi_cartao/admin_capture.php", {
-                method: "POST",
-                credentials: "same-origin",
-                headers: { "Content-Type": "application/x-www-form-urlencoded" },
-                body: "invoiceid=' . $invoiceId . '"
-            }).then(function (r) { return r.json(); }).then(function (data) {
-                alert(data.message || (data.success ? "Sucesso" : "Falha"));
-                window.location.reload();
-            }).catch(function () {
-                btn.disabled = false;
-                alert("Falha ao chamar o endpoint de captura.");
+    if ($cardParams['type']) {
+        $controls .= '<button type="button" class="btn btn-default btn-sm" id="efiCaptureBtn' . $invoiceId . '">Tentar Capturar Pagamento (Efí)</button>
+        <script>
+        (function () {
+            var btn = document.getElementById("efiCaptureBtn' . $invoiceId . '");
+            if (!btn) { return; }
+            btn.addEventListener("click", function () {
+                btn.disabled = true;
+                fetch("' . $systemUrl . '/modules/gateways/efi_cartao/admin_capture.php", {
+                    method: "POST",
+                    credentials: "same-origin",
+                    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+                    body: "invoiceid=' . $invoiceId . '"
+                }).then(function (r) { return r.json(); }).then(function (data) {
+                    alert(data.message || (data.success ? "Sucesso" : "Falha"));
+                    window.location.reload();
+                }).catch(function () {
+                    btn.disabled = false;
+                    alert("Falha ao chamar o endpoint de captura.");
+                });
             });
-        });
-    })();
-    </script>';
+        })();
+        </script>';
+    }
+
+    $pixParams = getGatewayVariables('efi_pix');
+    $paymentMethod = Capsule::table('tblinvoices')->where('id', $invoiceId)->value('paymentmethod');
+
+    if ($pixParams['type'] && $paymentMethod === 'efi_pix') {
+        $controls .= '<button type="button" class="btn btn-warning btn-sm" id="efiRegeneratePixBtn' . $invoiceId . '">Gerar nova cobrança Pix</button>
+        <script>
+        (function () {
+            var btn = document.getElementById("efiRegeneratePixBtn' . $invoiceId . '");
+            if (!btn) { return; }
+            btn.addEventListener("click", function () {
+                if (!window.confirm("A cobrança Pix atual será desativada e um novo QR Code será gerado. Continuar?")) { return; }
+                btn.disabled = true;
+                fetch("' . $systemUrl . '/modules/gateways/efi_pix/admin_regenerate.php", {
+                    method: "POST",
+                    credentials: "same-origin",
+                    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+                    body: "invoiceid=' . $invoiceId . '"
+                }).then(function (r) { return r.json(); }).then(function (data) {
+                    alert(data.message || (data.success ? "Sucesso" : "Falha"));
+                    if (data.success) { window.location.reload(); } else { btn.disabled = false; }
+                }).catch(function () {
+                    btn.disabled = false;
+                    alert("Falha ao renovar a cobrança Pix.");
+                });
+            });
+        })();
+        </script>';
+    }
+
+    return $controls;
 });
 
 /**
