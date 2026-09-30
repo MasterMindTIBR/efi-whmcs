@@ -19,7 +19,6 @@ if (!defined('WHMCS')) {
 require_once __DIR__ . '/../../modules/gateways/efi/vendor/autoload.php';
 
 App::load_function('gateway');
-App::load_function('invoice');
 
 use EfiWhmcs\Boleto\BoletoService;
 use EfiWhmcs\Support\EfiClientFactory;
@@ -97,6 +96,10 @@ add_hook('UpdateInvoiceTotal', 1, function ($vars) {
  * confirmou. Ver docs/ARQUITETURA.md, sugestão adicional §2.
  */
 add_hook('DailyCronJob', 1, function () {
+    if (!function_exists('getInvoiceStatusColour')) {
+        App::load_function('invoice');
+    }
+
     EfiWhmcs\Ledger\Schema::ensure();
 
     $staleSince = date('Y-m-d H:i:s', strtotime('-2 days'));

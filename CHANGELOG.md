@@ -31,3 +31,5 @@ Reescrita completa do módulo Efí para WHMCS a partir do zero, usando o SDK ofi
 
 - Carregamento das funções de gateway do WHMCS no processamento de cartão tokenizado.
 - Extração e recuperação do link e da linha digitável de boletos emitidos pela API Efí.
+- Carregamento das funções de fatura adiado para o cron, evitando colisão com as funções já
+  carregadas nas páginas da loja.
