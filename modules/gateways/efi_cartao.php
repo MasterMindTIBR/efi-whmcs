@@ -140,12 +140,71 @@ function efi_cartao_remoteinput($params)
         </script>';
 }
 
+/**
+ * Chamada quando o cliente clica em "Editar" num cartão salvo. O WHMCS core esconde os campos
+ * nativos de edição de cartão (número/validade/CVV e até a Descrição) sempre que o gateway
+ * define esta função -- ver `fieldgroup-creditcard`/`fieldgroup-auxfields` em
+ * `account-paymentmethods-manage.tpl`, ambos condicionados a `{if $remoteUpdate}`. Por isso
+ * reimplementamos aqui, só para este gateway, um formulário mínimo que permite renomear o
+ * apelido (campo `description` de `tblpaymethods`) sem jamais expor edição de PAN/CVV.
+ */
 function efi_cartao_remoteupdate($params)
 {
-    return '<!-- EFI_DEBUG_PARAMS ' . htmlspecialchars(json_encode($params, JSON_PARTIAL_OUTPUT_ON_ERROR)) . ' -->'
-        . '<div class="alert alert-info text-center">'
-        . 'Não é possível editar um cartão salvo. Cadastre um novo método de pagamento para substituí-lo.'
-        . '</div>';
+    $paymethodId = (int) ($params['paymethodid'] ?? 0);
+    $clientId = (int) ($params['userid'] ?? 0);
+    $currentDescription = (string) ($params['payMethod']['description'] ?? '');
+    $systemUrl = rtrim((string) ($params['systemurl'] ?? ''), '/');
+
+    return '<form id="efiCardRenameForm" class="efi-card-form" autocomplete="off">'
+        . '<div class="efi-field">'
+        . '<label>Nome do cartão</label>'
+        . '<input type="text" id="efi_card_nickname" maxlength="255" required value="' . htmlspecialchars($currentDescription) . '">'
+        . '</div>'
+        . '<div id="efi_rename_error" class="efi-error" style="display:none;"></div>'
+        . '<div id="efi_rename_success" class="efi-success" style="display:none;"></div>'
+        . '<button type="submit" id="efi_rename_submit" class="efi-submit">Salvar nome</button>'
+        . '</form>'
+        . '<script>'
+        . '(function () {'
+        . '"use strict";'
+        . 'var form = document.getElementById("efiCardRenameForm");'
+        . 'var errorBox = document.getElementById("efi_rename_error");'
+        . 'var successBox = document.getElementById("efi_rename_success");'
+        . 'var submitBtn = document.getElementById("efi_rename_submit");'
+        . 'form.addEventListener("submit", function (event) {'
+        . 'event.preventDefault();'
+        . 'errorBox.style.display = "none";'
+        . 'successBox.style.display = "none";'
+        . 'submitBtn.disabled = true;'
+        . 'submitBtn.textContent = "Salvando...";'
+        . 'fetch("' . htmlspecialchars($systemUrl, ENT_QUOTES) . '/modules/gateways/efi_cartao/remote_rename.php", {'
+        . 'method: "POST",'
+        . 'credentials: "same-origin",'
+        . 'headers: { "Content-Type": "application/json" },'
+        . 'body: JSON.stringify({'
+        . 'clientid: ' . (int) $clientId . ','
+        . 'paymethodid: ' . (int) $paymethodId . ','
+        . 'nickname: document.getElementById("efi_card_nickname").value'
+        . '})'
+        . '}).then(function (response) {'
+        . 'return response.text().then(function (body) {'
+        . 'try { return JSON.parse(body); } catch (error) { throw { message: "Erro desconhecido." }; }'
+        . '});'
+        . '}).then(function (data) {'
+        . 'if (!data.success) { throw { message: data.message || "Não foi possível salvar o nome." }; }'
+        . 'submitBtn.textContent = "Salvar nome";'
+        . 'successBox.textContent = "Nome atualizado!";'
+        . 'successBox.style.display = "block";'
+        . 'setTimeout(function () { window.top.location.reload(); }, 1200);'
+        . '}).catch(function (error) {'
+        . 'submitBtn.disabled = false;'
+        . 'submitBtn.textContent = "Salvar nome";'
+        . 'errorBox.textContent = (error && error.message) || "Não foi possível salvar o nome.";'
+        . 'errorBox.style.display = "block";'
+        . '});'
+        . '});'
+        . '})();'
+        . '</script>';
 }
 
 /**

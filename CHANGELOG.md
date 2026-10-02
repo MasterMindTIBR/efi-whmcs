@@ -17,6 +17,10 @@ Formato baseado em [Keep a Changelog](https://keepachangelog.com/pt-BR/1.0.0/).
 
 - Formulário de cartão agrupa automaticamente o número conforme a bandeira e exibe a validade
   como `MM/AA`; a tokenização continua enviando o ano com quatro dígitos à Efí.
+- Após sucesso (cobrança ou salvar cartão), o formulário exibe uma mensagem de confirmação por
+  3 segundos antes de redirecionar; ao pagar uma fatura, redireciona sempre para
+  `viewinvoice.php` da fatura correspondente, mesmo quando o pagamento é iniciado a partir da
+  página dedicada de pagamento (`/invoice/{id}/pay`).
 
 ### Corrigido
 
