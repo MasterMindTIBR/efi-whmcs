@@ -17,8 +17,8 @@ Formato baseado em [Keep a Changelog](https://keepachangelog.com/pt-BR/1.0.0/).
 
 - Checkout de cartão agora mantém a resposta AJAX em JSON quando o log completo está ativo; uma
   resposta inválida é exibida ao cliente como `Erro desconhecido.`.
-- Hook Efí agora reaproveita as funções de gateway já carregadas pelo WHMCS e não redeclara
-  `loadgatewaymodule()` na página de fatura.
+- Hook Efí verifica `loadgatewaymodule()` antes de carregar as funções de gateway, evitando sua
+  redeclaração na página de fatura.
 
 ## [1.0.0]
 

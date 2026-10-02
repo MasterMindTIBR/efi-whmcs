@@ -18,7 +18,7 @@ if (!defined('WHMCS')) {
 
 require_once __DIR__ . '/../../modules/gateways/efi/vendor/autoload.php';
 
-if (!function_exists('getGatewayVariables')) {
+if (!function_exists('loadgatewaymodule')) {
     App::load_function('gateway');
 }
 
