@@ -145,7 +145,7 @@ try {
             null,
             $encryptedToken,
             'billing',
-            'Efí - ' . ($brand ?: 'Cartão') . ' final ' . $last4
+            ($brand ?: 'Cartão') . ' final ' . $last4
         );
     }
 

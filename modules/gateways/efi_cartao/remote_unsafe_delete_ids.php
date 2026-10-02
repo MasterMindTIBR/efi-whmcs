@@ -35,4 +35,4 @@ if ($cards->count() <= 1) {
     $unsafeIds = $cards->where('order_preference', $minPreference)->pluck('id')->values()->all();
 }
 
-echo json_encode(['unsafeIds' => array_map('intval', $unsafeIds)]);
+echo json_encode(['unsafeIds' => array_map('intval', $unsafeIds), 'totalCount' => $cards->count()]);

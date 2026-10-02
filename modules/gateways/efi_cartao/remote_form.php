@@ -317,7 +317,7 @@ $systemUrl = rtrim((string) \WHMCS\Config\Setting::getValue('SystemURL'), '/');
                 <?php if ($isCharge): ?>
                 window.top.location.href = <?= json_encode($systemUrl . '/viewinvoice.php?id=' . $invoiceId) ?>;
                 <?php else: ?>
-                window.top.location.reload();
+                window.top.location.href = <?= json_encode($systemUrl . '/account/paymentmethods') ?>;
                 <?php endif; ?>
             }, 3000);
         }).catch(function (error) {
