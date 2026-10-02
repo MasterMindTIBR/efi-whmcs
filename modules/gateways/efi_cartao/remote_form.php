@@ -63,12 +63,12 @@ $systemUrl = rtrim((string) \WHMCS\Config\Setting::getValue('SystemURL'), '/');
     <?php endif; ?>
     <div class="efi-field">
         <label>N&uacute;mero do cart&atilde;o</label>
-        <input type="tel" id="efi_card_number" required autocomplete="cc-number" inputmode="numeric">
+        <input type="tel" id="efi_card_number" required maxlength="23" placeholder="0000 0000 0000 0000" autocomplete="cc-number" inputmode="numeric">
     </div>
     <div class="efi-row">
         <div class="efi-field">
-            <label>Validade (MM/AAAA)</label>
-            <input type="tel" id="efi_card_expiry" required placeholder="MM/AAAA" autocomplete="cc-exp">
+            <label>Validade (MM/AA)</label>
+            <input type="tel" id="efi_card_expiry" required maxlength="5" placeholder="MM/AA" autocomplete="cc-exp" inputmode="numeric">
         </div>
         <div class="efi-field">
             <label>CVV</label>
@@ -115,6 +115,60 @@ $systemUrl = rtrim((string) \WHMCS\Config\Setting::getValue('SystemURL'), '/');
         errorBox.style.display = 'block';
     }
 
+    function cardGroupSizes(cardNumber) {
+        if (/^3[47]/.test(cardNumber)) {
+            return [4, 6, 5]; // American Express
+        }
+        if (/^(?:30[0-5]|36|38)/.test(cardNumber)) {
+            return [4, 6, 4]; // Diners Club
+        }
+
+        return [4, 4, 4, 4, 3]; // Visa, Mastercard, Elo, Hipercard e cartões de 19 dígitos
+    }
+
+    function formatCardNumber(value) {
+        var digits = value.replace(/\D/g, '').slice(0, 19);
+        var groups = [];
+        var offset = 0;
+
+        cardGroupSizes(digits).forEach(function (size) {
+            if (offset < digits.length) {
+                groups.push(digits.slice(offset, offset + size));
+                offset += size;
+            }
+        });
+
+        return groups.join(' ');
+    }
+
+    function formatExpiry(value) {
+        var digits = value.replace(/\D/g, '').slice(0, 6);
+
+        // Aceita a colagem MM/AAAA, mas mantém no formulário apenas MM/AA.
+        if (digits.length > 4) {
+            digits = digits.slice(0, 2) + digits.slice(-2);
+        }
+
+        return digits.length > 2 ? digits.slice(0, 2) + '/' + digits.slice(2) : digits;
+    }
+
+    function formatInput(input, formatter) {
+        var digitsBeforeCursor = input.value.slice(0, input.selectionStart).replace(/\D/g, '').length;
+        var formatted = formatter(input.value);
+        var cursor = 0;
+        var seenDigits = 0;
+
+        while (cursor < formatted.length && seenDigits < digitsBeforeCursor) {
+            if (/\d/.test(formatted.charAt(cursor))) {
+                seenDigits++;
+            }
+            cursor++;
+        }
+
+        input.value = formatted;
+        input.setSelectionRange(cursor, cursor);
+    }
+
     function detectBrand(cardNumber) {
         return EfiPay.CreditCard.setCardNumber(cardNumber).verifyCardBrand();
     }
@@ -150,6 +204,17 @@ $systemUrl = rtrim((string) \WHMCS\Config\Setting::getValue('SystemURL'), '/');
             });
     }
 
+    var cardNumberInput = document.getElementById('efi_card_number');
+    var expiryInput = document.getElementById('efi_card_expiry');
+
+    cardNumberInput.addEventListener('input', function () {
+        formatInput(this, formatCardNumber);
+    });
+
+    expiryInput.addEventListener('input', function () {
+        formatInput(this, formatExpiry);
+    });
+
     document.getElementById('efi_card_number').addEventListener('blur', function () {
         var cardNumber = this.value.replace(/\D/g, '');
 
@@ -170,8 +235,8 @@ $systemUrl = rtrim((string) \WHMCS\Config\Setting::getValue('SystemURL'), '/');
         submitBtn.disabled = true;
         submitBtn.textContent = 'Processando...';
 
-        var cardNumber = document.getElementById('efi_card_number').value.replace(/\D/g, '');
-        var expiry = document.getElementById('efi_card_expiry').value.replace(/\D/g, '');
+        var cardNumber = cardNumberInput.value.replace(/\D/g, '');
+        var expiry = expiryInput.value.replace(/\D/g, '');
         var expMonth = expiry.substring(0, 2);
         var expYear = expiry.substring(2);
         var cvv = document.getElementById('efi_card_cvv').value.replace(/\D/g, '');
@@ -179,6 +244,13 @@ $systemUrl = rtrim((string) \WHMCS\Config\Setting::getValue('SystemURL'), '/');
         var holderDocument = document.getElementById('efi_holder_document').value.replace(/\D/g, '');
         var saveCard = document.getElementById('efi_save_card').checked;
         var installments = installmentsSelect && installmentsSelect.value ? parseInt(installmentsSelect.value, 10) : 1;
+
+        if (!/^(0[1-9]|1[0-2])\d{2}$/.test(expiry)) {
+            submitBtn.disabled = false;
+            submitBtn.textContent = <?= json_encode($isCharge ? 'Pagar' : 'Salvar cartão') ?>;
+            showError('Informe a validade no formato MM/AA.');
+            return;
+        }
 
         detectBrand(cardNumber).then(function (brand) {
             if (brand === 'undefined' || brand === 'unsupported') {
@@ -193,7 +265,7 @@ $systemUrl = rtrim((string) \WHMCS\Config\Setting::getValue('SystemURL'), '/');
                     number: cardNumber,
                     cvv: cvv,
                     expirationMonth: expMonth,
-                    expirationYear: expYear,
+                    expirationYear: '20' + expYear,
                     holderName: holderName,
                     holderDocument: holderDocument,
                     reuse: true

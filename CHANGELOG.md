@@ -13,6 +13,11 @@ Formato baseado em [Keep a Changelog](https://keepachangelog.com/pt-BR/1.0.0/).
   reconciliação diária.
 - Cancelamento da CobR pendente ao cancelar a fatura no WHMCS.
 
+### Alterado
+
+- Formulário de cartão agrupa automaticamente o número conforme a bandeira e exibe a validade
+  como `MM/AA`; a tokenização continua enviando o ano com quatro dígitos à Efí.
+
 ### Corrigido
 
 - Checkout de cartão agora mantém a resposta AJAX em JSON quando o log completo está ativo; uma
