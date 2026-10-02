@@ -105,6 +105,9 @@ try {
             'status' => $result['status'],
         ], 'Cobrança de cartão: ' . $result['status']);
 
+        if ($result['status'] === 'error') {
+            efi_cartao_process_fail('Não foi possível processar o cartão. Tente novamente mais tarde.', 502);
+        }
         if (!in_array($result['status'], ['approved', 'paid', 'waiting'], true)) {
             efi_cartao_process_fail('Pagamento recusado pela operadora.');
         }

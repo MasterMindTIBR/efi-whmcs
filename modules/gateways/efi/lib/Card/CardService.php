@@ -10,9 +10,9 @@ use EfiWhmcs\Support\GatewayLog;
 use EfiWhmcs\Support\Money;
 
 /**
- * Regras de negócio do cartão: cobrança com payment_token (checkout e recorrência via
- * `_capture`) e estorno. NUNCA recebe/manuseia PAN/CVV -- só o payment_token gerado no
- * navegador pela lib `payment-token-efi` (ver modules/gateways/efi_cartao/remote_form.php).
+ * Regras de negócio do cartão: cobrança em um passo com payment_token (checkout e recorrência
+ * via `_capture`). NUNCA recebe/manuseia PAN/CVV -- só o payment_token gerado no navegador pela
+ * lib `payment-token-efi` (ver modules/gateways/efi_cartao/remote_form.php).
  */
 final class CardService
 {
@@ -25,9 +25,8 @@ final class CardService
     }
 
     /**
-     * Cobra usando `POST /v2/charge/card`, que suporta o desafio 3DS. Usado tanto na primeira
-     * cobrança (cliente presente, pode incluir `tds_info`) quanto na recorrência automática via
-     * `_capture` (cliente ausente, sem `tds_info`).
+     * Cobra com `POST /v1/charge/one-step`, o fluxo oficial para payment_token. Usado tanto
+     * na primeira cobrança quanto na recorrência automática via `_capture`.
      *
      * @return array{status:string, transid:?string, charge_id:?string, tds_challenge:?array, raw:array}
      */
@@ -47,6 +46,16 @@ final class CardService
             $customer['email'] = $customerEmail;
         }
 
+        $creditCard = [
+            'customer' => $customer,
+            'installments' => max(1, $installments),
+            'payment_token' => $paymentToken,
+        ];
+
+        if ($tdsInfo !== null) {
+            $creditCard['tds_info'] = $tdsInfo;
+        }
+
         $body = [
             'items' => [[
                 'name' => 'Fatura #' . $invoiceId,
@@ -57,21 +66,13 @@ final class CardService
                 'custom_id' => 'whmcs_invoice_' . $invoiceId,
                 'notification_url' => $this->notificationUrl(),
             ],
-            'customer' => $customer,
-            'payment_token' => $paymentToken,
+            'payment' => [
+                'credit_card' => $creditCard,
+            ],
         ];
 
-        $installments = max(1, $installments);
-        if ($installments > 1) {
-            $body['installments'] = $installments;
-        }
-
-        if ($tdsInfo !== null) {
-            $body['tds_info'] = $tdsInfo;
-        }
-
         try {
-            $response = $this->api->createChargeCard([], $body);
+            $response = $this->api->createOneStepCharge([], $body);
         } catch (EfiException $e) {
             GatewayLog::error('efi_cartao', $this->gatewayParams, 'Falha ao cobrar cartão (' . $e->code . ')', [
                 'error' => $e->error,
@@ -80,18 +81,23 @@ final class CardService
             ]);
 
             return [
-                'status' => 'declined',
+                'status' => 'error',
                 'transid' => null,
                 'charge_id' => null,
                 'tds_challenge' => null,
-                'raw' => ['error' => $e->errorDescription],
+                'raw' => [
+                    'error' => $e->error,
+                    'description' => $e->errorDescription,
+                    'http_code' => $e->code,
+                ],
             ];
         }
 
         GatewayLog::debug('efi_cartao', $this->gatewayParams, 'Cobrança de cartão criada', $response);
 
-        $chargeId = isset($response['charge_id']) ? (string) $response['charge_id'] : null;
-        $status = (string) ($response['status'] ?? 'unknown');
+        $charge = is_array($response['data'] ?? null) ? $response['data'] : $response;
+        $chargeId = isset($charge['charge_id']) ? (string) $charge['charge_id'] : null;
+        $status = (string) ($charge['status'] ?? 'unknown');
 
         if ($chargeId !== null) {
             $this->recordLedger($invoiceId, $chargeId, $status, $amountCents);
@@ -101,7 +107,7 @@ final class CardService
             'status' => $status,
             'transid' => $chargeId,
             'charge_id' => $chargeId,
-            'tds_challenge' => $response['tdsChallenge'] ?? null,
+            'tds_challenge' => $charge['tdsChallenge'] ?? null,
             'raw' => $response,
         ];
     }

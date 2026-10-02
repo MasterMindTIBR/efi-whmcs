@@ -240,9 +240,13 @@ function efi_cartao_map_result(array $result, string $gatewayId): array
             'transid' => $result['transid'],
             'rawdata' => $result['raw'],
         ],
+        'error' => [
+            'status' => 'error',
+            'rawdata' => $result['raw'],
+        ],
         default => [
             'status' => 'declined',
-            'declinereason' => $result['raw']['error'] ?? $result['status'],
+            'declinereason' => $result['raw']['data']['reason'] ?? $result['raw']['error'] ?? $result['status'],
             'rawdata' => $result['raw'],
         ],
     };

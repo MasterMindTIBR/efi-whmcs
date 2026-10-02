@@ -19,6 +19,8 @@ Formato baseado em [Keep a Changelog](https://keepachangelog.com/pt-BR/1.0.0/).
   resposta inválida é exibida ao cliente como `Erro desconhecido.`.
 - Hook Efí carrega funções de gateway apenas dentro dos callbacks que precisam delas, impedindo
   a redeclaração de `loadgatewaymodule()` durante a renderização de faturas.
+- Cobranças de cartão agora usam o endpoint oficial `POST /v1/charge/one-step`; falhas HTTP da
+  API não são mais apresentadas como recusa da operadora.
 
 ## [1.0.0]
 
