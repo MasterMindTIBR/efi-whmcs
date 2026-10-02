@@ -28,6 +28,9 @@ Formato baseado em [Keep a Changelog](https://keepachangelog.com/pt-BR/1.0.0/).
   API não são mais apresentadas como recusa da operadora.
 - Checkout e recorrência de cartão enviam `phone_number` obrigatório, validado a partir do
   telefone cadastrado no cliente do WHMCS.
+- Salvar cartão não falha mais após uma cobrança aprovada: a validade (`mmyy`) agora é enviada a
+  `createCardPayMethod`, que exigia o formato e rejeitava o valor nulo anterior com
+  `Invalid Expiry Date`.
 
 ## [1.0.0]
 

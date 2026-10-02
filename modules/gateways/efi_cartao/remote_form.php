@@ -284,6 +284,7 @@ $systemUrl = rtrim((string) \WHMCS\Config\Setting::getValue('SystemURL'), '/');
                     card_mask: tokenResult.card_mask,
                     brand: tokenResult.brand || null,
                     holder_document: holderDocument,
+                    card_expiry_mmyy: expMonth + expYear,
                     installments: installments,
                     save_card: saveCard
                 })

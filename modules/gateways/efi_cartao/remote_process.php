@@ -45,6 +45,7 @@ $paymentToken = trim((string) ($body['payment_token'] ?? ''));
 $cardMask = (string) ($body['card_mask'] ?? '');
 $brand = $body['brand'] ?? null;
 $documentDigits = CustomerResolver::onlyDigits((string) ($body['holder_document'] ?? ''));
+$cardExpiryMmYy = CustomerResolver::onlyDigits((string) ($body['card_expiry_mmyy'] ?? ''));
 $saveCard = (bool) ($body['save_card'] ?? false);
 $invoiceId = (int) ($body['invoiceid'] ?? 0);
 $amountCents = (int) ($body['amount_cents'] ?? 0);
@@ -56,6 +57,10 @@ if ($paymentToken === '') {
 
 if (!CustomerResolver::isValidCpfOrCnpj($documentDigits)) {
     efi_cartao_process_fail('CPF/CNPJ inválido.');
+}
+
+if ($saveCard && !preg_match('/^(0[1-9]|1[0-2])\d{2}$/', $cardExpiryMmYy)) {
+    efi_cartao_process_fail('Validade do cartão inválida.');
 }
 
 $gatewayParams = getGatewayVariables('efi_cartao');
@@ -134,7 +139,7 @@ try {
             $clientId,
             'efi_cartao',
             $last4,
-            null, // sem data de validade -- gateway remoto/tokenizado, não guardamos PAN
+            $cardExpiryMmYy, // WHMCS exige mmyy; o PAN continua sem armazenamento local
             $brand,
             null,
             null,
