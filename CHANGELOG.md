@@ -21,6 +21,12 @@ Formato baseado em [Keep a Changelog](https://keepachangelog.com/pt-BR/1.0.0/).
   3 segundos antes de redirecionar; ao pagar uma fatura, redireciona sempre para
   `viewinvoice.php` da fatura correspondente, mesmo quando o pagamento é iniciado a partir da
   página dedicada de pagamento (`/invoice/{id}/pay`).
+- Editar um cartão salvo agora permite renomear o apelido (`tblpaymethods.description`) por um
+  formulário mínimo próprio, já que o WHMCS esconde o campo nativo de descrição sempre que o
+  gateway define `_remoteupdate`.
+- Tela "Métodos de Pagamento": o link nativo "Excluir" é desabilitado (cinza, com explicação)
+  para o único cartão da Efí do cliente ou para o cartão padrão quando há mais de um --
+  evita que o cliente tente excluir um cartão em uso e só descubra a falha depois do clique.
 
 ### Corrigido
 
