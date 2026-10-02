@@ -40,6 +40,20 @@ final class CustomerResolver
         return preg_replace('/\D+/', '', $value) ?? '';
     }
 
+    /**
+     * A API de cartão da Efí recebe telefone brasileiro sem prefixo +55: DDD + número.
+     */
+    public static function brazilianPhoneNumber(string $value): ?string
+    {
+        $phone = self::onlyDigits($value);
+
+        if (in_array(strlen($phone), [12, 13], true) && str_starts_with($phone, '55')) {
+            $phone = substr($phone, 2);
+        }
+
+        return preg_match('/^\d{10,11}$/', $phone) === 1 ? $phone : null;
+    }
+
     public static function isValidCpfOrCnpj(string $digitsOnly): bool
     {
         return in_array(strlen($digitsOnly), [11, 14], true);

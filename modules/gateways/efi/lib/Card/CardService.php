@@ -37,6 +37,7 @@ final class CardService
         string $customerName,
         string $documentDigitsOnly,
         ?string $customerEmail,
+        string $phoneNumber,
         ?array $tdsInfo = null,
         int $installments = 1
     ): array {
@@ -45,6 +46,7 @@ final class CardService
         if ($customerEmail) {
             $customer['email'] = $customerEmail;
         }
+        $customer['phone_number'] = $phoneNumber;
 
         $creditCard = [
             'customer' => $customer,

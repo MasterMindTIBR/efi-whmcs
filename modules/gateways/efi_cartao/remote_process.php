@@ -72,6 +72,11 @@ if ($clientDetails === null) {
 
 $customerName = trim($clientDetails->firstname . ' ' . $clientDetails->lastname);
 
+$phoneNumber = CustomerResolver::brazilianPhoneNumber((string) $clientDetails->phonenumber);
+if ($phoneNumber === null) {
+    efi_cartao_process_fail('Cadastre um telefone brasileiro válido no seu perfil antes de pagar com cartão.', 422);
+}
+
 try {
     $api = EfiClientFactory::make($gatewayParams);
     $service = new CardService($api, $gatewayParams);
@@ -95,6 +100,7 @@ try {
             $customerName,
             $documentDigits,
             $clientDetails->email,
+            $phoneNumber,
             $tdsInfo,
             min($installments, (int) ($gatewayParams['max_installments'] ?? 1))
         );

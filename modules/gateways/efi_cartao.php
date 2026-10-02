@@ -179,6 +179,13 @@ function efi_cartao_capture($params)
         return ['status' => 'error', 'rawdata' => 'CPF/CNPJ do cliente não encontrado no campo personalizado configurado; recorrência automática não pode prosseguir sem documento.'];
     }
 
+    $phoneNumber = \EfiWhmcs\Support\CustomerResolver::brazilianPhoneNumber(
+        (string) ($params['clientdetails']['phonenumber'] ?? '')
+    );
+    if ($phoneNumber === null) {
+        return ['status' => 'error', 'rawdata' => 'Telefone brasileiro válido do cliente não encontrado; recorrência automática não pode prosseguir sem telefone.'];
+    }
+
     $api = EfiClientFactory::make($params);
     $service = new CardService($api, $params);
 
@@ -192,6 +199,7 @@ function efi_cartao_capture($params)
         $customerName,
         $documentDigits,
         $params['clientdetails']['email'] ?? null,
+        $phoneNumber,
         null
     );
 

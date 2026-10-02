@@ -21,6 +21,8 @@ Formato baseado em [Keep a Changelog](https://keepachangelog.com/pt-BR/1.0.0/).
   a redeclaração de `loadgatewaymodule()` durante a renderização de faturas.
 - Cobranças de cartão agora usam o endpoint oficial `POST /v1/charge/one-step`; falhas HTTP da
   API não são mais apresentadas como recusa da operadora.
+- Checkout e recorrência de cartão enviam `phone_number` obrigatório, validado a partir do
+  telefone cadastrado no cliente do WHMCS.
 
 ## [1.0.0]
 
