@@ -22,7 +22,9 @@ final class EfiClientFactory
             'clientId' => trim((string) ($gatewayParams['client_id'] ?? '')),
             'clientSecret' => trim((string) ($gatewayParams['client_secret'] ?? '')),
             'sandbox' => $sandbox,
-            'debug' => self::debugLevel($gatewayParams) === 'full',
+            // O SDK imprime o trace cURL no corpo da resposta quando debug=true.
+            // Endpoints AJAX devem sempre devolver JSON válido.
+            'debug' => false,
             'cache' => true,
             'timeout' => 30,
         ];

@@ -13,6 +13,11 @@ Formato baseado em [Keep a Changelog](https://keepachangelog.com/pt-BR/1.0.0/).
   reconciliação diária.
 - Cancelamento da CobR pendente ao cancelar a fatura no WHMCS.
 
+### Corrigido
+
+- Checkout de cartão agora mantém a resposta AJAX em JSON quando o log completo está ativo; uma
+  resposta inválida é exibida ao cliente como `Erro desconhecido.`.
+
 ## [1.0.0]
 
 Reescrita completa do módulo Efí para WHMCS a partir do zero, usando o SDK oficial

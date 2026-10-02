@@ -217,7 +217,13 @@ $systemUrl = rtrim((string) \WHMCS\Config\Setting::getValue('SystemURL'), '/');
                 })
             });
         }).then(function (response) {
-            return response.json();
+            return response.text().then(function (body) {
+                try {
+                    return JSON.parse(body);
+                } catch (error) {
+                    throw { message: 'Erro desconhecido.' };
+                }
+            });
         }).then(function (data) {
             if (!data.success) {
                 throw { message: data.message || 'Pagamento recusado.' };

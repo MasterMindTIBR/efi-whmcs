@@ -48,10 +48,10 @@ final class ConfigSchema
                 'Type' => 'dropdown',
                 'Options' => [
                     'errors' => 'Somente erros (recomendado)',
-                    'full' => 'Completo (requisições e respostas, use só para depurar)',
+                    'full' => 'Completo (operações e respostas, use só para depurar)',
                     'none' => 'Nenhum',
                 ],
-                'Description' => 'Segredos (tokens, senhas) nunca são gravados no log, independente do nível.',
+                'Description' => 'O log completo é salvo no WHMCS; o SDK não escreve traces na resposta HTTP. Segredos (tokens, senhas) nunca são gravados no log.',
             ],
         ];
     }

@@ -88,6 +88,8 @@ final class CardService
             ];
         }
 
+        GatewayLog::debug('efi_cartao', $this->gatewayParams, 'Cobrança de cartão criada', $response);
+
         $chargeId = isset($response['charge_id']) ? (string) $response['charge_id'] : null;
         $status = (string) ($response['status'] ?? 'unknown');
 
