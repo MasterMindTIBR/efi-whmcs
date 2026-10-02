@@ -18,7 +18,9 @@ if (!defined('WHMCS')) {
 
 require_once __DIR__ . '/../../modules/gateways/efi/vendor/autoload.php';
 
-App::load_function('gateway');
+if (!function_exists('getGatewayVariables')) {
+    App::load_function('gateway');
+}
 
 use EfiWhmcs\Boleto\BoletoService;
 use EfiWhmcs\PixAutomatic\PixAutomaticService;
