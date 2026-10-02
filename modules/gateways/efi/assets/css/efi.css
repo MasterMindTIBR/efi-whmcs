@@ -64,14 +64,6 @@
     cursor: wait;
 }
 
-.efi-success {
-    color: #1b7a1b;
-    font-size: 14px;
-    font-weight: bold;
-    text-align: center;
-    margin-bottom: 10px;
-}
-
 .efi-error {
     color: #b00020;
     font-size: 13px;

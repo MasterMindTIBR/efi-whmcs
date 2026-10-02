@@ -41,6 +41,7 @@ $systemUrl = rtrim((string) \WHMCS\Config\Setting::getValue('SystemURL'), '/');
 <title>Cart&atilde;o de Cr&eacute;dito</title>
 <link rel="stylesheet" href="<?= htmlspecialchars($systemUrl) ?>/modules/gateways/efi/assets/css/efi.css">
 <script src="https://cdn.jsdelivr.net/npm/payment-token-efi/dist/payment-token-efi-umd.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/sweetalert2@11"></script>
 </head>
 <body>
 <div id="efi_adblock_warning" class="efi-error" style="display:none;">
@@ -85,7 +86,6 @@ $systemUrl = rtrim((string) \WHMCS\Config\Setting::getValue('SystemURL'), '/');
         <label><input type="checkbox" id="efi_save_card" checked> Salvar este cart&atilde;o para pr&oacute;ximos pagamentos</label>
     </div>
     <div id="efi_error" class="efi-error" style="display:none;"></div>
-    <div id="efi_success" class="efi-success" style="display:none;"></div>
     <button type="submit" id="efi_submit" class="efi-submit">
         <?= $isCharge ? 'Pagar' : 'Salvar cart&atilde;o' ?>
     </button>
@@ -96,7 +96,6 @@ $systemUrl = rtrim((string) \WHMCS\Config\Setting::getValue('SystemURL'), '/');
 
     var form = document.getElementById('efiCardForm');
     var errorBox = document.getElementById('efi_error');
-    var successBox = document.getElementById('efi_success');
     var submitBtn = document.getElementById('efi_submit');
     var installmentsWrap = document.getElementById('efi_installments_wrap');
     var installmentsSelect = document.getElementById('efi_installments');
@@ -115,12 +114,6 @@ $systemUrl = rtrim((string) \WHMCS\Config\Setting::getValue('SystemURL'), '/');
     function showError(message) {
         errorBox.textContent = message;
         errorBox.style.display = 'block';
-    }
-
-    function showSuccess(message) {
-        errorBox.style.display = 'none';
-        successBox.textContent = message;
-        successBox.style.display = 'block';
     }
 
     function cardGroupSizes(cardNumber) {
@@ -311,15 +304,23 @@ $systemUrl = rtrim((string) \WHMCS\Config\Setting::getValue('SystemURL'), '/');
             }
 
             submitBtn.disabled = true;
-            showSuccess(<?= json_encode($isCharge ? 'Pagamento recebido! Redirecionando para a fatura...' : 'Cartão salvo com sucesso!') ?>);
 
-            setTimeout(function () {
+            Swal.fire({
+                icon: 'success',
+                title: <?= json_encode($isCharge ? 'Pagamento recebido!' : 'Cartão salvo com sucesso!') ?>,
+                text: <?= json_encode($isCharge ? 'Redirecionando para a fatura...' : 'Redirecionando...') ?>,
+                timer: 3000,
+                timerProgressBar: true,
+                showConfirmButton: false,
+                allowOutsideClick: false,
+                allowEscapeKey: false,
+            }).then(function () {
                 <?php if ($isCharge): ?>
                 window.top.location.href = <?= json_encode($systemUrl . '/viewinvoice.php?id=' . $invoiceId) ?>;
                 <?php else: ?>
                 window.top.location.href = <?= json_encode($systemUrl . '/account/paymentmethods') ?>;
                 <?php endif; ?>
-            }, 3000);
+            });
         }).catch(function (error) {
             submitBtn.disabled = false;
             submitBtn.textContent = <?= json_encode($isCharge ? 'Pagar' : 'Salvar cartão') ?>;
