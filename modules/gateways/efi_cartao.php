@@ -142,7 +142,8 @@ function efi_cartao_remoteinput($params)
 
 function efi_cartao_remoteupdate($params)
 {
-    return '<div class="alert alert-info text-center">'
+    return '<!-- EFI_DEBUG_PARAMS ' . htmlspecialchars(json_encode($params, JSON_PARTIAL_OUTPUT_ON_ERROR)) . ' -->'
+        . '<div class="alert alert-info text-center">'
         . 'Não é possível editar um cartão salvo. Cadastre um novo método de pagamento para substituí-lo.'
         . '</div>';
 }
