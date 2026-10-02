@@ -18,9 +18,6 @@ if (!defined('WHMCS')) {
 
 require_once __DIR__ . '/../../modules/gateways/efi/vendor/autoload.php';
 
-if (!function_exists('loadgatewaymodule')) {
-    App::load_function('gateway');
-}
 
 use EfiWhmcs\Boleto\BoletoService;
 use EfiWhmcs\PixAutomatic\PixAutomaticService;
@@ -28,9 +25,18 @@ use EfiWhmcs\Support\EfiClientFactory;
 use EfiWhmcs\Support\GatewayLog;
 use WHMCS\Database\Capsule;
 
+function efi_gateway_variables(string $module): array
+{
+    if (!function_exists('getGatewayVariables')) {
+        App::load_function('gateway');
+    }
+
+    return getGatewayVariables($module);
+}
+
 add_hook('InvoiceCancelled', 1, function ($vars) {
     $invoiceId = (int) ($vars['invoiceid'] ?? 0);
-    $boletoParams = getGatewayVariables('efi_boleto');
+    $boletoParams = efi_gateway_variables('efi_boleto');
 
     if (!empty($boletoParams['type'])) {
         try {
@@ -41,7 +47,7 @@ add_hook('InvoiceCancelled', 1, function ($vars) {
         }
     }
 
-    $automaticParams = getGatewayVariables(PixAutomaticService::GATEWAY);
+    $automaticParams = efi_gateway_variables(PixAutomaticService::GATEWAY);
     if (!empty($automaticParams['type'])) {
         try {
             $api = EfiClientFactory::make($automaticParams, true);
@@ -60,7 +66,7 @@ add_hook('InvoiceCreated', 1, function ($vars) {
         return;
     }
 
-    $gatewayParams = getGatewayVariables(PixAutomaticService::GATEWAY);
+    $gatewayParams = efi_gateway_variables(PixAutomaticService::GATEWAY);
     if (empty($gatewayParams['type'])) {
         return;
     }
@@ -89,7 +95,7 @@ add_hook('UpdateInvoiceTotal', 1, function ($vars) {
         return;
     }
 
-    $boletoParams = getGatewayVariables('efi_boleto');
+    $boletoParams = efi_gateway_variables('efi_boleto');
 
     if ($boletoParams['type']) {
         try {
@@ -104,7 +110,7 @@ add_hook('UpdateInvoiceTotal', 1, function ($vars) {
         }
     }
 
-    $pixParams = getGatewayVariables('efi_pix');
+    $pixParams = efi_gateway_variables('efi_pix');
 
     if (!$pixParams['type'] || $invoice->paymentmethod !== 'efi_pix') {
         return;
@@ -173,7 +179,7 @@ add_hook('DailyCronJob', 1, function () {
 
 function efi_reconcile_boleto($charges): void
 {
-    $gatewayParams = getGatewayVariables('efi_boleto');
+    $gatewayParams = efi_gateway_variables('efi_boleto');
 
     if (!$gatewayParams['type']) {
         return;
@@ -208,7 +214,7 @@ function efi_reconcile_boleto($charges): void
 
 function efi_reconcile_pix($charges): void
 {
-    $gatewayParams = getGatewayVariables('efi_pix');
+    $gatewayParams = efi_gateway_variables('efi_pix');
 
     if (!$gatewayParams['type']) {
         return;
@@ -243,7 +249,7 @@ function efi_reconcile_pix($charges): void
 
 function efi_reconcile_pix_automatico($charges): void
 {
-    $gatewayParams = getGatewayVariables(PixAutomaticService::GATEWAY);
+    $gatewayParams = efi_gateway_variables(PixAutomaticService::GATEWAY);
     if (empty($gatewayParams['type'])) {
         return;
     }
@@ -304,7 +310,7 @@ add_hook('AdminInvoicesControlsOutput', 1, function ($vars) {
 
     $systemUrl = rtrim((string) \WHMCS\Config\Setting::getValue('SystemURL'), '/');
     $controls = '';
-    $cardParams = getGatewayVariables('efi_cartao');
+    $cardParams = efi_gateway_variables('efi_cartao');
 
     if ($cardParams['type']) {
         $controls .= '<button type="button" class="btn btn-default btn-sm" id="efiCaptureBtn' . $invoiceId . '">Tentar Capturar Pagamento (Efí)</button>
@@ -331,7 +337,7 @@ add_hook('AdminInvoicesControlsOutput', 1, function ($vars) {
         </script>';
     }
 
-    $pixParams = getGatewayVariables('efi_pix');
+    $pixParams = efi_gateway_variables('efi_pix');
     $paymentMethod = Capsule::table('tblinvoices')->where('id', $invoiceId)->value('paymentmethod');
 
     if ($pixParams['type'] && $paymentMethod === 'efi_pix') {
