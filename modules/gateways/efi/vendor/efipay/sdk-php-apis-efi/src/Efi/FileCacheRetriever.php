@@ -11,11 +11,20 @@ class FileCacheRetriever
     /**
      * FileCacheRetriever constructor.
      *
+     * PATCH LOCAL (não é código original da Efí -- ver EfiWhmcs\Support\EfiClientFactory):
+     * por padrão esta classe grava o cache (token OAuth cifrado, caminho do certificado) em
+     * `sys_get_temp_dir() . '/efi_cache'`, um diretório compartilhado por QUALQUER site/processo
+     * da mesma máquina em hospedagem compartilhada. Se a env `EFI_SDK_CACHE_DIR` estiver
+     * definida (setada por `EfiClientFactory` antes de instanciar o SDK), usa esse diretório
+     * privado do módulo em vez do /tmp do sistema. Reaplicar este patch em caso de atualização
+     * manual deste vendor.
+     *
      * @throws Exception If the cache directory cannot be created.
      */
     public function __construct()
     {
-        $baseCacheDir = sys_get_temp_dir();
+        $override = getenv('EFI_SDK_CACHE_DIR');
+        $baseCacheDir = ($override !== false && $override !== '') ? $override : sys_get_temp_dir();
         $customCacheDir = $baseCacheDir . '/efi_cache';
 
         if (!is_dir($customCacheDir)) {

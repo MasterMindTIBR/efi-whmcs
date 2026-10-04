@@ -14,6 +14,11 @@ use WHMCS\Database\Capsule;
  *      campo acima está vazio/não configurado).
  *
  * Nunca inventamos ou deduzimos CPF/CNPJ a partir de outro dado.
+ *
+ * Toda string de documento que sai desta classe passou por `onlyDigits()` -- em profundidade,
+ * mesmo os métodos de montagem de payload (`chargesCustomerDocument()`/`documentKey()`) reaplicam
+ * `onlyDigits()` no valor recebido, para que nenhum caractere não numérico chegue à API da Efí
+ * mesmo que uma chamada futura esqueça de higienizar antes.
  */
 final class CustomerResolver
 {
@@ -54,13 +59,92 @@ final class CustomerResolver
         return preg_match('/^\d{10,11}$/', $phone) === 1 ? $phone : null;
     }
 
+    /**
+     * Comprimento E dígito verificador. Rejeita documentos sintaticamente do tamanho certo mas
+     * inválidos (todos os dígitos iguais, DV incorreto) antes de gastar uma chamada de API.
+     */
     public static function isValidCpfOrCnpj(string $digitsOnly): bool
     {
-        return in_array(strlen($digitsOnly), [11, 14], true);
+        $digitsOnly = self::onlyDigits($digitsOnly);
+
+        return match (strlen($digitsOnly)) {
+            11 => self::isValidCpf($digitsOnly),
+            14 => self::isValidCnpj($digitsOnly),
+            default => false,
+        };
     }
 
+    public static function isValidCpf(string $digitsOnly): bool
+    {
+        if (strlen($digitsOnly) !== 11 || preg_match('/^(\d)\1{10}$/', $digitsOnly) === 1) {
+            return false;
+        }
+
+        for ($position = 9; $position <= 10; $position++) {
+            $sum = 0;
+            for ($i = 0; $i < $position; $i++) {
+                $sum += (int) $digitsOnly[$i] * ($position + 1 - $i);
+            }
+            $check = (($sum * 10) % 11) % 10;
+            if ($check !== (int) $digitsOnly[$position]) {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    public static function isValidCnpj(string $digitsOnly): bool
+    {
+        if (strlen($digitsOnly) !== 14 || preg_match('/^(\d)\1{13}$/', $digitsOnly) === 1) {
+            return false;
+        }
+
+        $weightsFirst = [5, 4, 3, 2, 9, 8, 7, 6, 5, 4, 3, 2];
+        $weightsSecond = [6, 5, 4, 3, 2, 9, 8, 7, 6, 5, 4, 3, 2];
+
+        foreach ([[12, $weightsFirst], [13, $weightsSecond]] as [$position, $weights]) {
+            $sum = 0;
+            for ($i = 0; $i < $position; $i++) {
+                $sum += (int) $digitsOnly[$i] * $weights[$i];
+            }
+            $check = $sum % 11;
+            $check = $check < 2 ? 0 : 11 - $check;
+            if ($check !== (int) $digitsOnly[$position]) {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    /**
+     * Chave usada pela API Pix, onde CPF/CNPJ fica sempre na raiz de `devedor`.
+     */
     public static function documentKey(string $digitsOnly): string
     {
-        return strlen($digitsOnly) === 14 ? 'cnpj' : 'cpf';
+        return strlen(self::onlyDigits($digitsOnly)) === 14 ? 'cnpj' : 'cpf';
+    }
+
+    /**
+     * Estrutura `customer` da API de Cobranças (boleto/cartão one-step): CPF fica na raiz, mas
+     * CNPJ precisa do envelope `juridical_person.{corporate_name,cnpj}` (ver
+     * dev.efipay.com.br/docs/api-cobrancas/boleto e .../cartao). `$companyName` vazio cai de
+     * volta para `$customerName`, já que a Efí exige `corporate_name` não vazio.
+     */
+    public static function chargesCustomerDocument(string $digitsOnly, string $customerName, ?string $companyName = null): array
+    {
+        $digitsOnly = self::onlyDigits($digitsOnly);
+
+        if (strlen($digitsOnly) === 14) {
+            $corporateName = trim((string) $companyName) !== '' ? trim((string) $companyName) : $customerName;
+
+            return ['juridical_person' => [
+                'corporate_name' => mb_substr($corporateName, 0, 200),
+                'cnpj' => $digitsOnly,
+            ]];
+        }
+
+        return ['cpf' => $digitsOnly];
     }
 }

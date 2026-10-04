@@ -7,3 +7,7 @@ Thumbs.db
 *.swp
 
 # vendor/ é commitado propositalmente (facilita instalação sem Composer no servidor).
+
+# Cache de token do SDK da Efí (arquivos gerados em runtime; ver EfiClientFactory::redirectSdkCache).
+/modules/gateways/efi/storage/sdk-cache/*
+!/modules/gateways/efi/storage/sdk-cache/.gitkeep
