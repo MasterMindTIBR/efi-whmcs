@@ -12,6 +12,9 @@ Formato baseado em [Keep a Changelog](https://keepachangelog.com/pt-BR/1.0.0/).
 - Webhooks de recorrência e cobrança Pix Automático com consulta autoritativa, idempotência e
   reconciliação diária.
 - Cancelamento da CobR pendente ao cancelar a fatura no WHMCS.
+- Opção "Pular verificação mTLS no cadastro do webhook" para os gateways Pix e Pix Automático
+  (útil em hospedagem compartilhada que não suporta apresentar o certificado cliente da Efí),
+  com checagem do IP de origem documentado pela Efí como medida compensatória quando ativa.
 
 ### Alterado
 
@@ -33,6 +36,10 @@ Formato baseado em [Keep a Changelog](https://keepachangelog.com/pt-BR/1.0.0/).
   "Allow Client Pay Method Removal") é desabilitado (cinza, com explicação) para o único
   cartão da Efí do cliente ou para o cartão padrão quando há mais de um -- evita que o cliente
   tente excluir um cartão em uso e só descubra a falha depois do clique.
+- Removida a opção "3D Secure obrigatório acima de (R$)" do gateway de cartão: nenhum fluxo de
+  3DS é implementado por este módulo e o campo nunca teve efeito algum; mantê-lo configurável
+  passava ao lojista a falsa impressão de que cobranças acima do valor definido tinham essa
+  proteção.
 
 ### Corrigido
 
@@ -47,6 +54,62 @@ Formato baseado em [Keep a Changelog](https://keepachangelog.com/pt-BR/1.0.0/).
 - Salvar cartão não falha mais após uma cobrança aprovada: a validade (`mmyy`) agora é enviada a
   `createCardPayMethod`, que exigia o formato e rejeitava o valor nulo anterior com
   `Invalid Expiry Date`.
+- Boleto: a emissão agora envia `juridical_person`/`corporate_name` quando o documento do
+  cliente é CNPJ (antes a Efí rejeitava ou tratava a cobrança como se fosse de pessoa física).
+- Boleto: reemitir após cancelamento atualiza (upsert) o registro já existente no ledger em vez
+  de criar um novo, evitando um boleto "órfão" apontando para uma cobrança já cancelada.
+- Boleto: o valor agora é realinhado junto com o vencimento quando o total da fatura muda; antes
+  só a data era realinhada, e o boleto ficava com o valor antigo.
+- Pix Automático: a CobR agora é agendada dentro da janela de 2 a 10 dias antes do vencimento
+  exigida pelo Bacen, em vez de só ser criada no gatilho `InvoiceCreated` (que podia cair fora
+  da janela aceita).
+- Pix Automático: usa o valor mínimo aceito pelo recebedor (`valorMinimoRecebedor`) em vez de um
+  valor fixo (`valorRec`), permitindo reajuste de preço sem travar a cobrança recorrente.
+- Pix Automático: uma CobR que volta com status de erro agora é reprocessada automaticamente, e
+  o admin é avisado no log quando não é possível agendar.
+- Boleto/Pix/CobR agora também são cancelados nos eventos `InvoicePaid`, `InvoiceDeleted` e
+  `InvoiceRefunded` (antes só em `InvoiceCancelled`), evitando uma cobrança pendente numa fatura
+  que deixou de estar em aberto por outro motivo.
+- A reconciliação diária (rede de segurança contra falha pontual de callback) passou a olhar uma
+  janela maior e também cobranças de cartão com status `waiting`.
+- Pix: o id de devolução enviado em `pixDevolution` agora é só alfanumérico e determinístico.
+  Antes usava `uniqid()`, que gera `_` e `.` -- caracteres rejeitados pelo Bacen --, de modo que
+  todo estorno de Pix falhava; o novo id também evita duplicar o estorno numa nova tentativa.
+- Pix: o desconto configurado agora é lançado como item negativo na fatura (`UpdateInvoice`)
+  assim que o pagamento é confirmado, em vez de creditar um valor menor que o total. Antes a
+  fatura nunca era marcada como paga quando havia desconto, porque o saldo (o próprio desconto)
+  ficava em aberto.
+- Pix: uma cobrança imediata expirada agora é renovada automaticamente ao reabrir a fatura. A
+  Efí nunca muda o status de uma cobrança sozinha quando ela expira; o módulo passou a rastrear
+  a validade (`expires_at`) e substitui a cobrança por uma nova quando necessário.
+- Cartão: o callback assíncrono agora atualiza o status local do ledger ANTES de validar o
+  transid junto ao WHMCS. Essa validação pode encerrar o script inteiro quando vê um transid
+  repetido, o que deixava o ledger local parado no status antigo e, se a notificação trouxesse
+  mais de uma cobrança no mesmo lote, abortava o processamento das demais.
+- Hooks e callbacks que leem configuração de gateway nunca mais derrubam a requisição inteira
+  (erro 500) quando o módulo correspondente nunca foi salvo em Configurações > Pagamentos; cada
+  um agora responde com uma mensagem de erro própria.
+
+### Segurança
+
+- Cartão: o valor cobrado é sempre calculado no servidor a partir do total da fatura, nunca a
+  partir do campo enviado pelo navegador. Antes um cliente podia cobrar qualquer valor no
+  próprio cartão e ainda assim fazer o WHMCS marcar a fatura inteira como paga.
+- Cartão: proteção contra cobrança duplicada por reenvio (duplo clique, retry de rede, nova aba):
+  uma nova tentativa é recusada enquanto já existir uma cobrança em andamento (`waiting`) ou já
+  concluída para a mesma fatura.
+- Cartão: os botões de ação administrativa na fatura ("Tentar Capturar Pagamento" e "Gerar nova
+  cobrança Pix") agora exigem um token CSRF por sessão, além da sessão de admin ativa; a captura
+  de pagamento também passou a recusar a ação quando a sessão não tem um usuário administrador
+  identificado (antes caía silenciosamente para uma chamada de API sem restrição de permissão).
+- O cache de token OAuth e o caminho resolvido do certificado mTLS do SDK da Efí saem do
+  diretório temporário compartilhado do sistema operacional para um diretório privado deste
+  módulo -- relevante em hospedagem compartilhada, onde `/tmp` pode ser acessado por outros
+  sites/processos da mesma máquina.
+- Scripts de terceiros carregados via CDN na página de cobrança de cartão (`payment-token-efi`,
+  responsável por tokenizar o cartão no navegador, e o SweetAlert2) agora usam versão exata
+  fixada e hash de integridade (Subresource Integrity), em vez de `@latest` sem verificação
+  alguma.
 
 ## [1.0.0]
 
