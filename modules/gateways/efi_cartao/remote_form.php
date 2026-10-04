@@ -40,8 +40,8 @@ $systemUrl = rtrim((string) \WHMCS\Config\Setting::getValue('SystemURL'), '/');
 <meta charset="utf-8">
 <title>Cart&atilde;o de Cr&eacute;dito</title>
 <link rel="stylesheet" href="<?= htmlspecialchars($systemUrl) ?>/modules/gateways/efi/assets/css/efi.css">
-<script src="https://cdn.jsdelivr.net/npm/payment-token-efi/dist/payment-token-efi-umd.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/sweetalert2@11"></script>
+<script src="https://cdn.jsdelivr.net/npm/payment-token-efi@3.4.1/dist/payment-token-efi-umd.min.js" integrity="sha384-EmF2lDoZuWyKCWYx2O+Lm02FamtyADthG1H/LqnyYL4G23jv8WkHhvBYZStg2nvS" crossorigin="anonymous"></script>
+<script src="https://cdn.jsdelivr.net/npm/sweetalert2@11.26.25/dist/sweetalert2.all.min.js" integrity="sha384-nLoOnA/BDh8A/jxqtckg4DumuCGOBYUnNJLZdQz/zfYNp3wcjGSoWTAzgko06G/2" crossorigin="anonymous"></script>
 </head>
 <body>
 <div id="efi_adblock_warning" class="efi-error" style="display:none;">

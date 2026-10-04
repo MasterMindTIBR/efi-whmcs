@@ -11,6 +11,7 @@ require_once __DIR__ . '/vendor/autoload.php';
 
 use Efi\Exception\EfiException;
 use EfiWhmcs\Support\EfiClientFactory;
+use EfiWhmcs\Support\GatewayLoader;
 
 header('Content-Type: application/json');
 
@@ -28,9 +29,9 @@ if (!in_array($module, ['efi_boleto', 'efi_pix', 'efi_cartao'], true)) {
     exit;
 }
 
-$gatewayParams = getGatewayVariables($module);
+$gatewayParams = GatewayLoader::variables($module);
 
-if (!$gatewayParams['type']) {
+if ($gatewayParams === null) {
     echo json_encode(['success' => false, 'message' => 'Módulo não está ativo.']);
     exit;
 }

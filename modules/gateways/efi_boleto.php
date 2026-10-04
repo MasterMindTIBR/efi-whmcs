@@ -164,7 +164,8 @@ function efi_boleto_link($params)
             ]],
             $customerName,
             $documentDigits,
-            Money::toCents($params['amount'])
+            Money::toCents($params['amount']),
+            $params['clientdetails']['companyname'] ?? null
         );
     } catch (\Throwable $e) {
         GatewayLog::error('efi_boleto', $params, 'Erro ao emitir boleto', $e->getMessage());

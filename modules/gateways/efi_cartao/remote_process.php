@@ -10,13 +10,15 @@ require_once __DIR__ . '/../../../init.php';
 require_once __DIR__ . '/../efi/vendor/autoload.php';
 
 use EfiWhmcs\Card\CardService;
+use EfiWhmcs\Ledger\ChargeRepository;
 use EfiWhmcs\Support\Crypto;
 use EfiWhmcs\Support\CustomerResolver;
 use EfiWhmcs\Support\EfiClientFactory;
+use EfiWhmcs\Support\GatewayLoader;
 use EfiWhmcs\Support\GatewayLog;
+use EfiWhmcs\Support\Money;
 use WHMCS\Database\Capsule;
 
-App::load_function('gateway');
 App::load_function('invoice');
 
 header('Content-Type: application/json');
@@ -48,7 +50,6 @@ $documentDigits = CustomerResolver::onlyDigits((string) ($body['holder_document'
 $cardExpiryMmYy = CustomerResolver::onlyDigits((string) ($body['card_expiry_mmyy'] ?? ''));
 $saveCard = (bool) ($body['save_card'] ?? false);
 $invoiceId = (int) ($body['invoiceid'] ?? 0);
-$amountCents = (int) ($body['amount_cents'] ?? 0);
 $installments = max(1, (int) ($body['installments'] ?? 1));
 
 if ($paymentToken === '') {
@@ -63,9 +64,9 @@ if ($saveCard && !preg_match('/^(0[1-9]|1[0-2])\d{2}$/', $cardExpiryMmYy)) {
     efi_cartao_process_fail('Validade do cartão inválida.');
 }
 
-$gatewayParams = getGatewayVariables('efi_cartao');
+$gatewayParams = GatewayLoader::variables('efi_cartao');
 
-if (!$gatewayParams['type']) {
+if ($gatewayParams === null) {
     efi_cartao_process_fail('Módulo de cartão não está ativo.', 500);
 }
 
@@ -86,17 +87,42 @@ try {
     $api = EfiClientFactory::make($gatewayParams);
     $service = new CardService($api, $gatewayParams);
 
-    if ($invoiceId > 0 && $amountCents > 0) {
-        // Confere que a fatura pertence de fato a este cliente antes de cobrar.
+    if ($invoiceId > 0) {
+        // Confere que a fatura pertence de fato a este cliente antes de cobrar. O valor
+        // cobrado é SEMPRE calculado aqui a partir do total da fatura no banco -- nunca a
+        // partir de `amount_cents` enviado pelo cliente, que poderia cobrar R$0,01 no cartão e
+        // ainda assim mandar o WHMCS marcar a fatura inteira como paga (addInvoicePayment com
+        // valor 0 = saldo total).
         $invoice = Capsule::table('tblinvoices')->where('id', $invoiceId)->where('userid', $clientId)->first();
 
         if ($invoice === null) {
             efi_cartao_process_fail('Fatura não encontrada para este cliente.', 403);
         }
 
-        $tdsInfo = null; // Ver docs/ARQUITETURA.md -- 3DS depende de um passo de fingerprint
-                          // adicional da Efí ainda não confirmado nesta integração; cobrança
-                          // prossegue via análise de risco padrão sem tds_info.
+        if ($invoice->status !== 'Unpaid') {
+            efi_cartao_process_fail('Esta fatura não está mais em aberto.', 409);
+        }
+
+        // Protege contra reenvio (duplo clique, retry de rede, back+resubmit): busca a
+        // cobrança já registrada no ledger local para esta fatura (equivalente ao custom_id
+        // `whmcs_invoice_{id}` gravado na metadata da cobrança) ANTES de chamar a Efí de novo.
+        // 'waiting' significa que uma cobrança já está em análise/3DS assíncrono -- recobrar
+        // geraria uma SEGUNDA transação real no cartão do cliente; 'approved'/'paid' significa
+        // que já foi concluída. Qualquer outro status (recusada, erro, cancelada) permite nova
+        // tentativa normalmente.
+        $existingCharge = ChargeRepository::findByInvoiceAndRail($invoiceId, CardService::RAIL);
+
+        if ($existingCharge !== null && in_array($existingCharge->status, ['waiting', 'approved', 'paid'], true)) {
+            efi_cartao_process_fail('Já existe uma cobrança de cartão em andamento ou concluída para esta fatura.', 409);
+        }
+
+        $amountCents = Money::toCents((float) $invoice->total);
+
+        // 3D Secure NÃO está implementado: exigiria um passo de fingerprint adicional da Efí no
+        // navegador (gera o `tds_identifier`) e uma página pública de retorno de challenge
+        // (`challenge_callback_url`), nenhum dos dois presentes nesta integração. Cobrança
+        // prossegue via análise de risco padrão da Efí sem tds_info -- ver análise de produção.
+        $tdsInfo = null;
 
         $result = $service->chargeWithToken(
             $invoiceId,
@@ -125,7 +151,7 @@ try {
 
         if (in_array($result['status'], ['approved', 'paid'], true)) {
             checkCbTransID($result['transid']);
-            addInvoicePayment($invoiceId, $result['transid'], 0, 0, 'efi_cartao');
+            addInvoicePayment($invoiceId, $result['transid'], Money::toReais($amountCents), 0, 'efi_cartao');
         }
         // status 'waiting' (ex.: análise/3DS assíncrono): pagamento será aplicado pelo
         // callback/efi_cartao.php quando a notificação de confirmação chegar.

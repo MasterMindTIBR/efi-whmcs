@@ -48,6 +48,18 @@ function efi_pix_automatico_config(): array
             'Size' => '40',
             'Description' => 'Deixe em branco se o certificado não tiver senha.',
         ],
+        'skip_mtls_webhook' => [
+            'FriendlyName' => 'Pular verificação mTLS no cadastro do webhook',
+            'Type' => 'yesno',
+            'Description' => 'Ative SOMENTE se o seu servidor não suportar validar o certificado mTLS da Efí ao RECEBER o webhook (comum em hospedagem compartilhada). Envia `x-skip-mtls-checking` só nas chamadas de cadastro de webhook -- as demais chamadas continuam exigindo o certificado normalmente. Sem mTLS, este módulo já valida a origem das notificações pelo segredo da URL (`ws=`) e pelo IP documentado da Efí.',
+        ],
+        'efi_webhook_allowed_ips' => [
+            'FriendlyName' => 'IPs permitidos para o webhook (com mTLS pulado)',
+            'Type' => 'text',
+            'Size' => '60',
+            'Default' => '34.193.116.226',
+            'Description' => 'Só é checado quando "Pular verificação mTLS" acima está ativo. Lista separada por vírgula dos IPs de origem aceitos para o webhook; o valor padrão é o IP documentado hoje pela Efí (pode mudar -- ver a doc oficial de Webhooks Pix se as notificações pararem de chegar).',
+        ],
         'periodicity' => [
             'FriendlyName' => 'Periodicidade autorizada',
             'Type' => 'dropdown',
@@ -117,7 +129,7 @@ function efi_pix_automatico_config_validate($params): array
     }
 
     try {
-        $api = EfiClientFactory::make($params, true);
+        $api = EfiClientFactory::makeForWebhookRegistration($params);
         $service = new PixAutomaticService($api, $params);
         $webhook = ['webhookUrl' => $service->notificationUrl()];
         $api->pixConfigWebhook(['chave' => trim((string) $params['pix_key'])], $webhook);

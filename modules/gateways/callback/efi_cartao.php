@@ -14,18 +14,20 @@ require_once __DIR__ . '/../efi/vendor/autoload.php';
 
 use EfiWhmcs\Ledger\ChargeRepository;
 use EfiWhmcs\Support\EfiClientFactory;
+use EfiWhmcs\Support\GatewayLoader;
 use EfiWhmcs\Support\GatewayLog;
 use EfiWhmcs\Support\Money;
 use EfiWhmcs\Webhook\ChargeNotificationProcessor;
 
-App::load_function('gateway');
 App::load_function('invoice');
 
 $gatewayModuleName = 'efi_cartao';
-$gatewayParams = getGatewayVariables($gatewayModuleName);
+$gatewayParams = GatewayLoader::variables($gatewayModuleName);
 
-if (!$gatewayParams['type']) {
-    die('Module Not Activated');
+if ($gatewayParams === null) {
+    GatewayLog::error($gatewayModuleName, [], 'Callback recebido com o módulo inativo/não configurado');
+    http_response_code(200);
+    die('module not activated');
 }
 
 $notificationToken = $_POST['notification'] ?? null;
@@ -57,15 +59,26 @@ foreach ($transitions as $transition) {
         'to' => $to,
     ], 'Notificação de cartão: ' . $to);
 
+    // O ledger local é atualizado SEMPRE primeiro: `checkCbTransID()` do WHMCS interrompe o
+    // script inteiro com `die()` quando encontra um transid já registrado (ex.: esta cobrança
+    // já foi creditada de forma síncrona por remote_process.php e agora chega a notificação
+    // assíncrona do mesmo pagamento) -- se checkCbTransID rodasse primeiro, nosso status local
+    // ficaria parado no valor antigo para sempre, e qualquer transição seguinte neste MESMO
+    // lote de notificações nunca seria processada.
+    $alreadyPaidLocally = $charge->status === 'paid';
+
     if (in_array($to, ['paid', 'approved'], true)) {
+        ChargeRepository::updateStatus($charge->id, 'paid');
+    } else {
+        ChargeRepository::updateStatus($charge->id, $to);
+    }
+
+    if (in_array($to, ['paid', 'approved'], true) && !$alreadyPaidLocally) {
         $invoiceIdChecked = checkCbInvoiceID($invoiceId, $gatewayModuleName);
         $amount = $transition['valueCents'] !== null ? Money::toReais($transition['valueCents']) : 0;
 
         checkCbTransID($charge->efi_charge_id);
         addInvoicePayment($invoiceIdChecked, $charge->efi_charge_id, $amount, 0, $gatewayModuleName);
-        ChargeRepository::updateStatus($charge->id, 'paid');
-    } else {
-        ChargeRepository::updateStatus($charge->id, $to);
     }
 }
 

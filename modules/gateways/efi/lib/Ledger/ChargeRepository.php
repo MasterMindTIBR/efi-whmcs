@@ -42,6 +42,33 @@ final class ChargeRepository
         ]));
     }
 
+    /**
+     * Cria a cobrança da fatura/trilho, ou atualiza a já existente (ver `UNIQUE(invoice_id,
+     * rail)` em `Schema`) -- necessário para reemitir um boleto depois de cancelado: um segundo
+     * `create()` para o mesmo par violaria a constraint, deixando a reemissão travada mesmo
+     * sendo exatamente o caso que `issueOrFetch()` pretende cobrir.
+     */
+    public static function upsert(int $invoiceId, string $rail, array $attributes): int
+    {
+        Schema::ensure();
+
+        $now = date('Y-m-d H:i:s');
+        $existing = Capsule::table('mod_efi_charges')->where('invoice_id', $invoiceId)->where('rail', $rail)->first();
+
+        if ($existing !== null) {
+            Capsule::table('mod_efi_charges')->where('id', $existing->id)->update($attributes + ['updated_at' => $now]);
+
+            return (int) $existing->id;
+        }
+
+        return Capsule::table('mod_efi_charges')->insertGetId($attributes + [
+            'invoice_id' => $invoiceId,
+            'rail' => $rail,
+            'created_at' => $now,
+            'updated_at' => $now,
+        ]);
+    }
+
     public static function updateStatus(int $id, string $status, ?string $efiChargeId = null): void
     {
         Schema::ensure();

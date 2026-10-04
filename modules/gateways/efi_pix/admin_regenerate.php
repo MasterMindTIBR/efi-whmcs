@@ -7,12 +7,13 @@
 
 require_once __DIR__ . '/../../../init.php';
 
-App::load_function('gateway');
 require_once __DIR__ . '/../efi/vendor/autoload.php';
 
 use EfiWhmcs\Pix\PixService;
+use EfiWhmcs\Support\AdminCsrf;
 use EfiWhmcs\Support\CustomerResolver;
 use EfiWhmcs\Support\EfiClientFactory;
+use EfiWhmcs\Support\GatewayLoader;
 use EfiWhmcs\Support\GatewayLog;
 use EfiWhmcs\Support\Money;
 use WHMCS\Database\Capsule;
@@ -22,6 +23,12 @@ header('Content-Type: application/json');
 if (empty($_SESSION['adminid'])) {
     http_response_code(403);
     echo json_encode(['success' => false, 'message' => 'Sessão de admin inválida.']);
+    exit;
+}
+
+if (!AdminCsrf::verify($_POST['csrf'] ?? null)) {
+    http_response_code(403);
+    echo json_encode(['success' => false, 'message' => 'Token CSRF inválido ou ausente. Recarregue a página da fatura e tente novamente.']);
     exit;
 }
 
@@ -59,9 +66,9 @@ if (in_array($invoice->status, ['Paid', 'Cancelled', 'Refunded'], true)) {
     exit;
 }
 
-$gatewayParams = getGatewayVariables('efi_pix');
+$gatewayParams = GatewayLoader::variables('efi_pix');
 
-if (!$gatewayParams['type']) {
+if ($gatewayParams === null) {
     http_response_code(400);
     echo json_encode(['success' => false, 'message' => 'Gateway Efí - Pix não está ativo.']);
     exit;

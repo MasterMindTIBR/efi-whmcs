@@ -89,6 +89,12 @@ final class Repository
         ]);
     }
 
+    public static function deleteCharge(int $id): void
+    {
+        Schema::ensure();
+        Capsule::table('mod_efi_pix_auto_charges')->where('id', $id)->delete();
+    }
+
     public static function updateCharge(int $id, array $attributes): void
     {
         Schema::ensure();

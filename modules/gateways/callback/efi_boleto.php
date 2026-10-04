@@ -15,18 +15,20 @@ require_once __DIR__ . '/../efi/vendor/autoload.php';
 use EfiWhmcs\Boleto\BoletoService;
 use EfiWhmcs\Ledger\ChargeRepository;
 use EfiWhmcs\Support\EfiClientFactory;
+use EfiWhmcs\Support\GatewayLoader;
 use EfiWhmcs\Support\GatewayLog;
 use EfiWhmcs\Support\Money;
 use EfiWhmcs\Webhook\ChargeNotificationProcessor;
 
-App::load_function('gateway');
 App::load_function('invoice');
 
 $gatewayModuleName = 'efi_boleto';
-$gatewayParams = getGatewayVariables($gatewayModuleName);
+$gatewayParams = GatewayLoader::variables($gatewayModuleName);
 
-if (!$gatewayParams['type']) {
-    die('Module Not Activated');
+if ($gatewayParams === null) {
+    GatewayLog::error($gatewayModuleName, [], 'Callback recebido com o módulo inativo/não configurado');
+    http_response_code(200); // 200 para não entrar em retry-storm por erro de config local
+    die('module not activated');
 }
 
 $notificationToken = $_POST['notification'] ?? null;

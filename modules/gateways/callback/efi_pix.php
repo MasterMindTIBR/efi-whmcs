@@ -12,20 +12,22 @@ require_once __DIR__ . '/../../../init.php';
 require_once __DIR__ . '/../efi/vendor/autoload.php';
 
 use EfiWhmcs\Ledger\ChargeRepository;
+use EfiWhmcs\Pix\PixService;
 use EfiWhmcs\PixAutomatic\NotificationProcessor as PixAutomaticNotificationProcessor;
 use EfiWhmcs\PixAutomatic\PixAutomaticService;
 use EfiWhmcs\PixAutomatic\Repository as PixAutomaticRepository;
 use EfiWhmcs\Support\EfiClientFactory;
+use EfiWhmcs\Support\GatewayLoader;
 use EfiWhmcs\Support\GatewayLog;
 use EfiWhmcs\Support\Money;
+use EfiWhmcs\Support\WebhookIpAllowlist;
 use EfiWhmcs\Webhook\PixNotificationProcessor;
 use WHMCS\Database\Capsule;
 
-App::load_function('gateway');
 App::load_function('invoice');
 
-$pixParams = getGatewayVariables('efi_pix');
-$automaticParams = getGatewayVariables(PixAutomaticService::GATEWAY);
+$pixParams = GatewayLoader::variables('efi_pix') ?? [];
+$automaticParams = GatewayLoader::variables(PixAutomaticService::GATEWAY) ?? [];
 $providedSecret = (string) ($_GET['ws'] ?? '');
 $validSecrets = [];
 
@@ -38,6 +40,15 @@ foreach ([['efi_pix', $pixParams], [PixAutomaticService::GATEWAY, $automaticPara
 
 if ($validSecrets === []) {
     GatewayLog::error('efi_pix', $pixParams, 'Webhook Pix rejeitado: segredo ausente/incorreto', ['ip' => $_SERVER['REMOTE_ADDR'] ?? null]);
+    http_response_code(200);
+    echo '200';
+    exit;
+}
+
+$remoteAddr = (string) ($_SERVER['REMOTE_ADDR'] ?? '');
+
+if (!WebhookIpAllowlist::allows($remoteAddr, $pixParams, $automaticParams)) {
+    GatewayLog::error('efi_pix', $pixParams, 'Webhook Pix rejeitado: IP de origem fora da lista permitida (mTLS pulado)', ['ip' => $remoteAddr]);
     http_response_code(200);
     echo '200';
     exit;
@@ -67,10 +78,23 @@ if (!empty($pixParams['type'])) {
                 'updated_at' => date('Y-m-d H:i:s'),
             ]);
 
-            $invoiceId = checkCbInvoiceID($invoiceId, 'efi_pix');
-            checkCbTransID($transition['e2eId']);
-            addInvoicePayment($invoiceId, $transition['e2eId'], Money::toReais($transition['valueCents']), 0, 'efi_pix');
+            // Ledger local e lançamento do desconto SEMPRE primeiro: `checkCbTransID()` do
+            // WHMCS interrompe o script inteiro com `die()` quando acha um transid já
+            // registrado, e sem esta guarda o desconto seria lançado DE NOVO a cada reentrega
+            // da mesma notificação (reduzindo o total da fatura repetidamente).
+            $alreadyConcluded = $charge->status === 'CONCLUIDA';
+
+            if (!$alreadyConcluded) {
+                (new PixService($api, $pixParams))->applyDiscountLineItem($invoiceId, (int) $transition['valueCents']);
+            }
+
             ChargeRepository::updateStatus($charge->id, 'CONCLUIDA');
+
+            if (!$alreadyConcluded) {
+                $invoiceIdChecked = checkCbInvoiceID($invoiceId, 'efi_pix');
+                checkCbTransID($transition['e2eId']);
+                addInvoicePayment($invoiceIdChecked, $transition['e2eId'], Money::toReais($transition['valueCents']), 0, 'efi_pix');
+            }
         }
     } catch (\Throwable $e) {
         GatewayLog::error('efi_pix', $pixParams, 'Falha ao processar webhook Pix', $e->getMessage());

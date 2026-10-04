@@ -8,6 +8,7 @@ use EfiWhmcs\Ledger\ChargeRepository;
 use EfiWhmcs\Support\CustomerResolver;
 use EfiWhmcs\Support\GatewayLog;
 use EfiWhmcs\Support\Money;
+use WHMCS\Database\Capsule;
 
 /**
  * Regras de negócio do Pix: cobrança imediata + QR code, sempre renderizada inline na página da
@@ -33,10 +34,27 @@ final class PixService
         $existing = ChargeRepository::findByInvoiceAndRail($invoiceId, self::RAIL);
 
         if ($existing !== null) {
+            // Pix imediato NUNCA transiciona o status sozinho quando expira (diferente de
+            // boleto/CobR): uma cobrança `ATIVA` cujo `calendario.expiracao` já passou continua
+            // `ATIVA` para sempre na Efí, só que não pode mais ser paga. Por isso rastreamos
+            // `expires_at` (calculado na emissão) no nosso próprio metadata -- é a ÚNICA forma
+            // de detectar a expiração e renovar automaticamente ao reabrir a fatura.
+            if ($existing->status === 'ATIVA' && $this->isExpiredLocally($existing)) {
+                return $this->regenerate($invoiceId, $totalAmountCents, $customerName, $documentDigitsOnly);
+            }
+
             return $this->presentExisting($existing);
         }
 
         return $this->issue($invoiceId, $totalAmountCents, $customerName, $documentDigitsOnly);
+    }
+
+    private function isExpiredLocally(object $charge): bool
+    {
+        $metadata = json_decode((string) $charge->metadata, true) ?: [];
+        $expiresAt = isset($metadata['expires_at']) ? (int) $metadata['expires_at'] : null;
+
+        return $expiresAt !== null && time() > $expiresAt;
     }
 
     /**
@@ -98,6 +116,8 @@ final class PixService
 
         $locId = (string) ($updated['loc']['id'] ?? $charge->efi_loc_id ?? '');
         $qr = $this->generateQrCode($locId);
+        $expiresAt = $this->expiresAtFromCalendario($detail['calendario'] ?? null)
+            ?? (isset($metadata['expires_at']) ? (int) $metadata['expires_at'] : null);
 
         ChargeRepository::replacePixCharge(
             $charge->id,
@@ -105,7 +125,7 @@ final class PixService
             $locId !== '' ? $locId : null,
             (string) ($updated['status'] ?? 'ATIVA'),
             $amountCents,
-            $this->metadata($discountPercent, $qr['qrcode'] ?? null)
+            $this->metadata($discountPercent, $qr['qrcode'] ?? null, $expiresAt)
         );
 
         return "Valor da cobrança Pix {$charge->efi_charge_id} atualizado para R$ " . number_format($amountCents / 100, 2, ',', '.') . '.';
@@ -213,7 +233,8 @@ final class PixService
         }
 
         $status = (string) ($charge['status'] ?? 'ATIVA');
-        $metadata = $this->metadata($discountPercent, $qr['qrcode'] ?? null);
+        $expiresAt = $this->expiresAtFromCalendario($charge['calendario'] ?? null);
+        $metadata = $this->metadata($discountPercent, $qr['qrcode'] ?? null, $expiresAt);
 
         if ($replacedCharge === null) {
             $localId = ChargeRepository::create([
@@ -294,12 +315,33 @@ final class PixService
         return number_format($amountCents / 100, 2, '.', '');
     }
 
-    private function metadata(float $discountPercent, ?string $copyPaste): string
+    private function metadata(float $discountPercent, ?string $copyPaste, ?int $expiresAt = null): string
     {
         return json_encode([
             'discount_percent' => $discountPercent,
             'copy_paste' => $copyPaste,
+            'expires_at' => $expiresAt,
         ]) ?: '{}';
+    }
+
+    /**
+     * `calendario.criacao` (ISO 8601) + `calendario.expiracao` (segundos) vêm tanto na criação
+     * quanto na consulta da cobrança -- são a única fonte confiável de quando ela expira,
+     * já que o campo `status` não muda sozinho quando isso acontece.
+     */
+    private function expiresAtFromCalendario(?array $calendario): ?int
+    {
+        if (!isset($calendario['criacao'], $calendario['expiracao'])) {
+            return null;
+        }
+
+        $createdAt = strtotime((string) $calendario['criacao']);
+
+        if ($createdAt === false) {
+            return null;
+        }
+
+        return $createdAt + (int) $calendario['expiracao'];
     }
 
     public function notificationUrl(string $webhookSecret): string
@@ -309,5 +351,38 @@ final class PixService
         // `ignorar=` impede a Efí de acrescentar `/pix` ao final da URL cadastrada (ver doc
         // oficial de webhooks Pix); `ws` é nossa camada extra de validação por segredo na URL.
         return $systemUrl . '/modules/gateways/callback/efi_pix.php?ws=' . urlencode($webhookSecret) . '&ignorar=';
+    }
+
+    /**
+     * Quando `discount_percent` está configurado, o valor realmente recebido via Pix é MENOR
+     * que o total da fatura no WHMCS. Creditar só esse valor com `addInvoicePayment()` deixaria
+     * a fatura com saldo residual (o desconto) e ela NUNCA seria marcada como paga. Em vez
+     * disso, lança o desconto como um item de fatura NEGATIVO (`UpdateInvoice`), reduzindo o
+     * total da fatura para bater exatamente com o valor cobrado -- só então o pagamento
+     * integral quita a fatura. Idempotente: só chamar uma vez por cobrança (ver callback, que
+     * guarda por `charge->status`); chamar de novo duplicaria o desconto.
+     */
+    public function applyDiscountLineItem(int $invoiceId, int $chargedAmountCents): void
+    {
+        $invoiceTotalCents = Money::toCents((float) (Capsule::table('tblinvoices')->where('id', $invoiceId)->value('total') ?? 0));
+        $discountCents = $invoiceTotalCents - $chargedAmountCents;
+
+        if ($discountCents <= 0) {
+            return;
+        }
+
+        $results = localAPI('UpdateInvoice', [
+            'invoiceid' => $invoiceId,
+            'newitemdescription' => ['Desconto Pix'],
+            'newitemamount' => [-Money::toReais($discountCents)],
+            'newitemtaxed' => [false],
+        ], null);
+
+        if (($results['result'] ?? '') !== 'success') {
+            GatewayLog::error('efi_pix', $this->gatewayParams, 'Falha ao lançar item de desconto Pix na fatura', [
+                'invoice_id' => $invoiceId,
+                'result' => $results,
+            ]);
+        }
     }
 }

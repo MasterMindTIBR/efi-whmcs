@@ -6,6 +6,7 @@ use Efi\EfiPay;
 use Efi\Exception\EfiException;
 use EfiWhmcs\Support\CustomerResolver;
 use EfiWhmcs\Support\GatewayLog;
+use WHMCS\Database\Capsule;
 
 /**
  * Jornada 3 do Pix Automático: a primeira fatura é Pix imediato; o mesmo copia-e-cola também
@@ -100,7 +101,11 @@ final class PixAutomaticService
                     'dataInicial' => $this->firstRecurringDate($invoiceDueDate),
                     'periodicidade' => $this->periodicity(),
                 ],
-                'valor' => ['valorRec' => self::formatAmount($amountCents)],
+                // `valorMinimoRecebedor` (em vez de `valorRec` fixo) permite que cada CobR tenha
+                // um valor diferente, desde que não menor que este -- necessário porque a fatura
+                // WHMCS muda de valor (multa, desconto, crédito aplicado, item adicional) sem
+                // que isso deva travar a cobrança recorrente (ver scheduleInvoice()).
+                'valor' => ['valorMinimoRecebedor' => self::formatAmount($amountCents)],
                 'politicaRetentativa' => (string) ($this->gatewayParams['retry_policy'] ?? 'NAO_PERMITE'),
                 'loc' => (int) $locId,
                 'ativacao' => ['dadosJornada' => ['txid' => (string) ($initialCharge['txid'] ?? $initialTxid)]],
@@ -139,6 +144,11 @@ final class PixAutomaticService
         return ['copy_paste' => $copyPaste, 'status' => (string) ($response['status'] ?? 'CRIADA')];
     }
 
+    /**
+     * Agenda a CobR de uma fatura, OU adia para quando ela estiver dentro da janela aceita pelo
+     * Bacen (o chamador -- hook `InvoiceCreated` ou o cron -- decide se tenta de novo depois).
+     * Reaproveita uma cobrança anterior que ficou `error` em vez de deixá-la travada para sempre.
+     */
     public function scheduleInvoice(object $invoice): ?string
     {
         $recurrence = Repository::findRecurrenceByClient((int) $invoice->userid);
@@ -147,16 +157,51 @@ final class PixAutomaticService
         }
 
         $amountCents = (int) round(((float) $invoice->total) * 100);
-        if ($amountCents !== (int) $recurrence->amount_cents) {
-            return 'Pix Automático não agendado: a fatura possui valor diferente da autorização original; solicite uma nova autorização ao cliente.';
+        if ($amountCents < (int) $recurrence->amount_cents) {
+            return 'Pix Automático não agendado: o valor da fatura é menor que o mínimo aceito pela autorização original (valorMinimoRecebedor); solicite uma nova autorização ao cliente.';
         }
 
         $existing = Repository::findChargeByInvoice((int) $invoice->id);
-        if ($existing !== null) {
+        if ($existing !== null && $existing->status !== 'error') {
             return null;
         }
 
+        if (!self::isWithinSchedulingWindow((string) $invoice->duedate)) {
+            return 'Pix Automático adiado: o Bacen exige que a instrução de uma cobrança recorrente chegue ao banco do pagador entre 2 e 10 dias antes do vencimento (FAQ Pix Automático, Bacen); o cron tentará novamente dentro dessa janela.';
+        }
+
+        if ($existing !== null) {
+            // Retentativa de uma CobR que ficou `error`: descarta a linha antiga e recria com o
+            // MESMO txid (determinístico por fatura), para que uma remota já criada na tentativa
+            // anterior seja recuperada por `createOrFetchAutomaticCharge()` em vez de duplicada.
+            Repository::deleteCharge((int) $existing->id);
+        }
+
+        return $this->createRecurringCharge($recurrence, $invoice, $amountCents);
+    }
+
+    /**
+     * Reprocessa uma CobR que ficou `error` na última tentativa, sem esperar que o cron
+     * reencontre a fatura pela janela de agendamento (ela pode já estar dentro da janela).
+     */
+    public function retryErroredCharge(object $charge): ?string
+    {
+        $invoice = Capsule::table('tblinvoices')
+            ->where('id', $charge->invoice_id)
+            ->where('status', 'Unpaid')
+            ->first(['id', 'userid', 'total', 'duedate']);
+
+        if ($invoice === null) {
+            return null;
+        }
+
+        return $this->scheduleInvoice($invoice);
+    }
+
+    private function createRecurringCharge(object $recurrence, object $invoice, int $amountCents): ?string
+    {
         $txid = self::txid('charge', (int) $invoice->id);
+
         try {
             $chargeId = Repository::createCharge([
                 'recurrence_id' => (int) $recurrence->id,
@@ -168,11 +213,11 @@ final class PixAutomaticService
                 'metadata' => '{}',
             ]);
         } catch (\Exception) {
-            return null;
+            return null; // corrida: outro processo já criou a cobrança desta fatura.
         }
 
         try {
-            $response = $this->api->pixCreateAutomaticChargeTxid(['txid' => $txid], [
+            $response = $this->createOrFetchAutomaticCharge($txid, [
                 'idRec' => $recurrence->efi_recurrence_id,
                 'infoAdicional' => 'Fatura WHMCS #' . $invoice->id,
                 'calendario' => ['dataDeVencimento' => $invoice->duedate],
@@ -186,11 +231,45 @@ final class PixAutomaticService
                 'error' => $e->errorDescription,
             ]);
             Repository::updateCharge($chargeId, ['status' => 'error']);
-            return 'Não foi possível agendar o Pix Automático na Efí: ' . $e->errorDescription;
+
+            return 'Não foi possível agendar o Pix Automático na Efí: ' . $e->errorDescription . ' (nova tentativa automática no próximo cron)';
         }
 
         Repository::updateCharge($chargeId, ['status' => (string) ($response['status'] ?? 'CRIADA')]);
+
         return 'Cobrança Pix Automático agendada na Efí.';
+    }
+
+    /**
+     * Mesmo padrão de `createOrFetchInitialCharge()`: um 409 (txid já existe) nunca é erro --
+     * é exatamente o caso de uma tentativa anterior que criou a CobR na Efí antes de falhar
+     * localmente (timeout, queda do processo). Buscar em vez de recriar evita CobR duplicada.
+     */
+    private function createOrFetchAutomaticCharge(string $txid, array $body): array
+    {
+        try {
+            return $this->api->pixCreateAutomaticChargeTxid(['txid' => $txid], $body);
+        } catch (EfiException $e) {
+            if ((int) $e->code !== 409) {
+                throw $e;
+            }
+
+            return $this->api->pixDetailAutomaticCharge(['txid' => $txid]);
+        }
+    }
+
+    /**
+     * Janela que o Bacen exige para o agendamento de uma cobrança recorrente: a instrução
+     * precisa chegar ao PSP pagador entre 2 e 10 dias antes do vencimento (FAQ Pix Automático
+     * do Banco Central, "prazo entre 2 e 10 dias para que a instrução de pagamento seja
+     * recebida pelo PSP pagador"). Fora dessa janela a Efí rejeita a criação da CobR.
+     */
+    public static function isWithinSchedulingWindow(string $dueDate): bool
+    {
+        $start = date('Y-m-d', strtotime('+2 days'));
+        $end = date('Y-m-d', strtotime('+10 days'));
+
+        return $dueDate >= $start && $dueDate <= $end;
     }
 
     public function cancelInvoiceCharge(int $invoiceId): void

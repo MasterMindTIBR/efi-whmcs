@@ -54,6 +54,18 @@ function efi_pix_config()
             'Size' => '40',
             'Description' => 'Deixe em branco se o certificado não tiver senha.',
         ],
+        'skip_mtls_webhook' => [
+            'FriendlyName' => 'Pular verificação mTLS no cadastro do webhook',
+            'Type' => 'yesno',
+            'Description' => 'Ative SOMENTE se o seu servidor não suportar validar o certificado mTLS da Efí ao RECEBER o webhook (comum em hospedagem compartilhada). Envia `x-skip-mtls-checking` só na chamada de cadastro do webhook -- as demais chamadas (cobrança, QR code) continuam exigindo o certificado normalmente. Sem mTLS, este módulo já valida a origem das notificações pelo segredo da URL (`ws=`) e pelo IP documentado da Efí.',
+        ],
+        'efi_webhook_allowed_ips' => [
+            'FriendlyName' => 'IPs permitidos para o webhook (com mTLS pulado)',
+            'Type' => 'text',
+            'Size' => '60',
+            'Default' => '34.193.116.226',
+            'Description' => 'Só é checado quando "Pular verificação mTLS" acima está ativo. Lista separada por vírgula dos IPs de origem aceitos para o webhook; o valor padrão é o IP documentado hoje pela Efí (pode mudar -- ver a doc oficial de Webhooks Pix se as notificações pararem de chegar).',
+        ],
         'expiration_days' => [
             'FriendlyName' => 'Validade da cobrança (dias)',
             'Type' => 'text',
@@ -105,7 +117,7 @@ function efi_pix_config_validate($params)
     }
 
     try {
-        $api = EfiClientFactory::make($params, true);
+        $api = EfiClientFactory::makeForWebhookRegistration($params);
         $service = new PixService($api, $params);
         $api->pixConfigWebhook(['chave' => trim($params['pix_key'])], ['webhookUrl' => $service->notificationUrl($webhookSecret)]);
     } catch (\Throwable $e) {
@@ -216,8 +228,15 @@ function efi_pix_refund($params)
 
     try {
         $api = EfiClientFactory::make($params, true);
+
+        // Id de devolução: só alfanumérico, 1-35 chars (regra do Bacen) e DETERMINÍSTICO a
+        // partir do charge local -- se o WHMCS re-chamar refund() (timeout, retry manual),
+        // reenvia o MESMO id, que a Efí trata como a mesma devolução em vez de criar um novo
+        // estorno duplicado. `uniqid(..., true)` antigo gerava `_` e `.`, rejeitado pela Efí.
+        $devolutionId = substr('whmcsrefund' . $charge->id, 0, 35);
+
         $response = $api->pixDevolution(
-            ['e2eId' => $e2eId, 'id' => uniqid('whmcs_', true)],
+            ['e2eId' => $e2eId, 'id' => $devolutionId],
             ['valor' => number_format((float) $params['amount'], 2, '.', '')]
         );
 

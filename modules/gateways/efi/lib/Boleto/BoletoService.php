@@ -36,7 +36,8 @@ final class BoletoService
         array $items,
         string $customerName,
         string $documentDigitsOnly,
-        int $totalAmountCents
+        int $totalAmountCents,
+        ?string $companyName = null
     ): array {
         $existing = ChargeRepository::findByInvoiceAndRail($invoiceId, self::RAIL);
 
@@ -47,7 +48,7 @@ final class BoletoService
         $offsetDays = (int) ($this->gatewayParams['due_days_offset'] ?? 0);
         $expireAt = DueDate::forCreation($invoiceDueDate, $offsetDays);
 
-        $body = $this->buildOneStepBody($invoiceId, $expireAt, $items, $customerName, $documentDigitsOnly);
+        $body = $this->buildOneStepBody($invoiceId, $expireAt, $items, $customerName, $documentDigitsOnly, $companyName);
 
         try {
             $response = $this->api->createOneStepCharge([], $body);
@@ -73,9 +74,7 @@ final class BoletoService
         $barcode = $billet['barcode'];
         $link = $billet['link'];
 
-        $localId = ChargeRepository::create([
-            'invoice_id' => $invoiceId,
-            'rail' => self::RAIL,
+        $localId = ChargeRepository::upsert($invoiceId, self::RAIL, [
             'efi_charge_id' => $chargeId,
             'status' => (string) ($data['status'] ?? 'waiting'),
             'amount_cents' => $totalAmountCents,
@@ -99,10 +98,16 @@ final class BoletoService
      * Realinha o vencimento do boleto quando a fatura WHMCS é editada (hook UpdateInvoiceTotal).
      * Reaplica o MESMO offset gravado na emissão, nunca a configuração corrente do gateway.
      *
+     * `PUT /v1/charge/:id/billet` só aceita `expire_at` -- a Efí não tem endpoint para mudar o
+     * VALOR de um boleto já emitido. Quando o total da fatura muda (multa, desconto, crédito,
+     * item novo), a única ação segura é cancelar o boleto com o valor antigo; a próxima vez que
+     * `_link()` rodar (cliente reabre a fatura, ou o admin) emite um boleto novo já com o valor e
+     * o vencimento corretos -- `issueOrFetch()` reemite sempre que o existente está `canceled`.
+     *
      * @return string|null null se nada precisou ser feito; caso contrário, uma mensagem de
      *                      diagnóstico (sucesso ou motivo de não ter sido possível realinhar).
      */
-    public function realignDueDate(int $invoiceId, string $newInvoiceDueDate): ?string
+    public function realignDueDate(int $invoiceId, string $newInvoiceDueDate, int $currentTotalAmountCents): ?string
     {
         $charge = ChargeRepository::findByInvoiceAndRail($invoiceId, self::RAIL);
 
@@ -112,6 +117,25 @@ final class BoletoService
 
         if (!in_array($charge->status, ['new', 'waiting', 'unpaid'], true)) {
             return "Boleto {$charge->efi_charge_id} está com status '{$charge->status}'; vencimento não realinhado (a Efí só permite alterar cobranças não pagas).";
+        }
+
+        if ($currentTotalAmountCents !== (int) $charge->amount_cents) {
+            try {
+                $this->api->cancelCharge(['id' => $charge->efi_charge_id]);
+            } catch (EfiException $e) {
+                GatewayLog::error('efi_boleto', $this->gatewayParams, 'Falha ao cancelar boleto com valor desatualizado (' . $e->code . ')', [
+                    'error' => $e->error,
+                    'description' => $e->errorDescription,
+                    'invoice' => $invoiceId,
+                    'charge_id' => $charge->efi_charge_id,
+                ]);
+
+                return "O valor da fatura mudou, mas não foi possível cancelar o boleto {$charge->efi_charge_id} com o valor antigo: {$e->errorDescription}. Cancele manualmente na Efí antes que o cliente pague o valor errado.";
+            }
+
+            ChargeRepository::updateStatus($charge->id, 'canceled');
+
+            return "Boleto {$charge->efi_charge_id} cancelado porque o valor da fatura mudou de R$ " . number_format($charge->amount_cents / 100, 2, ',', '.') . " para R$ " . number_format($currentTotalAmountCents / 100, 2, ',', '.') . " (a Efí não altera o valor de um boleto já emitido); um boleto novo com o valor correto será emitido na próxima vez que a fatura for aberta.";
         }
 
         $offsetDays = (int) ($charge->due_offset_days ?? 0);
@@ -216,7 +240,8 @@ final class BoletoService
         string $expireAt,
         array $items,
         string $customerName,
-        string $documentDigitsOnly
+        string $documentDigitsOnly,
+        ?string $companyName = null
     ): array {
         $efiItems = array_map(static fn (array $item) => [
             'name' => mb_substr($item['name'], 0, 255),
@@ -224,8 +249,11 @@ final class BoletoService
             'value' => (int) $item['value_cents'],
         ], $items);
 
-        $customer = ['name' => $customerName];
-        $customer[CustomerResolver::documentKey($documentDigitsOnly)] = $documentDigitsOnly;
+        // CNPJ precisa do envelope `customer.juridical_person.{corporate_name,cnpj}` -- enviar
+        // um CNPJ na raiz de `customer` (como o CPF) é rejeitado pela Efí (ver
+        // dev.efipay.com.br/docs/api-cobrancas/boleto, exemplo "Exemplo 2 (CNPJ)").
+        $customer = ['name' => $customerName]
+            + CustomerResolver::chargesCustomerDocument($documentDigitsOnly, $customerName, $companyName);
 
         $configurations = [];
 
@@ -241,10 +269,8 @@ final class BoletoService
 
         $writeOffDays = $this->gatewayParams['days_to_write_off'] ?? '';
         if ($writeOffDays !== '' && is_numeric($writeOffDays)) {
-            // [INFERENCE] nome do atributo confirmado na documentação em prosa
-            // (dev.efipay.com.br/docs/api-cobrancas/boleto), mas sem um payload de exemplo no
-            // SDK que confirme o posicionamento exato dentro de `configurations`. Validar em
-            // sandbox antes de confiar em produção.
+            // Posicionamento dentro de `configurations` confirmado no payload de exemplo oficial
+            // (dev.efipay.com.br/docs/api-cobrancas/boleto, "Exemplo 3 (days_to_write_off)").
             $configurations['days_to_write_off'] = (int) $writeOffDays;
         }
 

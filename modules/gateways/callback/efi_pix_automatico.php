@@ -13,24 +13,36 @@ use EfiWhmcs\PixAutomatic\NotificationProcessor;
 use EfiWhmcs\PixAutomatic\PixAutomaticService;
 use EfiWhmcs\PixAutomatic\Repository;
 use EfiWhmcs\Support\EfiClientFactory;
+use EfiWhmcs\Support\GatewayLoader;
 use EfiWhmcs\Support\GatewayLog;
 use EfiWhmcs\Support\Money;
+use EfiWhmcs\Support\WebhookIpAllowlist;
 use WHMCS\Database\Capsule;
 
-App::load_function('gateway');
 App::load_function('invoice');
 
 $gatewayModuleName = PixAutomaticService::GATEWAY;
-$gatewayParams = getGatewayVariables($gatewayModuleName);
+$gatewayParams = GatewayLoader::variables($gatewayModuleName);
 
-if (!$gatewayParams['type']) {
-    die('Module Not Activated');
+if ($gatewayParams === null) {
+    GatewayLog::error($gatewayModuleName, [], 'Callback recebido com o módulo inativo/não configurado');
+    http_response_code(200);
+    die('module not activated');
 }
 
 $expectedSecret = trim((string) ($gatewayParams['webhook_secret'] ?? ''));
 $providedSecret = (string) ($_GET['ws'] ?? '');
 if ($expectedSecret === '' || !hash_equals($expectedSecret, $providedSecret)) {
     GatewayLog::error($gatewayModuleName, $gatewayParams, 'Webhook Pix Automático rejeitado: segredo ausente/incorreto', ['ip' => $_SERVER['REMOTE_ADDR'] ?? null]);
+    http_response_code(200);
+    echo '200';
+    exit;
+}
+
+$remoteAddr = (string) ($_SERVER['REMOTE_ADDR'] ?? '');
+
+if (!WebhookIpAllowlist::allows($remoteAddr, $gatewayParams)) {
+    GatewayLog::error($gatewayModuleName, $gatewayParams, 'Webhook Pix Automático rejeitado: IP de origem fora da lista permitida (mTLS pulado)', ['ip' => $remoteAddr]);
     http_response_code(200);
     echo '200';
     exit;

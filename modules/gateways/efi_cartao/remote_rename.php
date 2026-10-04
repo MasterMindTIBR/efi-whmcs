@@ -8,9 +8,9 @@
 
 require_once __DIR__ . '/../../../init.php';
 
-App::load_function('gateway');
 require_once __DIR__ . '/../efi/vendor/autoload.php';
 
+use EfiWhmcs\Support\GatewayLoader;
 use EfiWhmcs\Support\GatewayLog;
 use WHMCS\Database\Capsule;
 
@@ -46,7 +46,7 @@ if ($paymethodId <= 0) {
     efi_cartao_rename_fail('Método de pagamento inválido.');
 }
 
-$gatewayParams = getGatewayVariables('efi_cartao');
+$gatewayParams = GatewayLoader::variables('efi_cartao') ?? [];
 
 $updated = Capsule::table('tblpaymethods')
     ->where('id', $paymethodId)

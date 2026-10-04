@@ -21,24 +21,27 @@ require_once __DIR__ . '/../../modules/gateways/efi/vendor/autoload.php';
 
 use EfiWhmcs\Boleto\BoletoService;
 use EfiWhmcs\PixAutomatic\PixAutomaticService;
+use EfiWhmcs\Support\AdminCsrf;
 use EfiWhmcs\Support\EfiClientFactory;
+use EfiWhmcs\Support\GatewayLoader;
 use EfiWhmcs\Support\GatewayLog;
 use WHMCS\Database\Capsule;
 
-function efi_gateway_variables(string $module): array
+/**
+ * `null` quando o módulo não está configurado/ativo -- ver `GatewayLoader` para o porquê de
+ * nunca chamar `getGatewayVariables()` direto aqui (ela derrubaria hooks que também cobrem
+ * outro gateway Efí ativo).
+ */
+function efi_gateway_variables(string $module): ?array
 {
-    if (!function_exists('getGatewayVariables')) {
-        App::load_function('gateway');
-    }
-
-    return getGatewayVariables($module);
+    return GatewayLoader::variables($module);
 }
 
 add_hook('InvoiceCancelled', 1, function ($vars) {
     $invoiceId = (int) ($vars['invoiceid'] ?? 0);
     $boletoParams = efi_gateway_variables('efi_boleto');
 
-    if (!empty($boletoParams['type'])) {
+    if ($boletoParams !== null) {
         try {
             $api = EfiClientFactory::make($boletoParams);
             (new BoletoService($api, $boletoParams))->cancel($invoiceId);
@@ -47,8 +50,18 @@ add_hook('InvoiceCancelled', 1, function ($vars) {
         }
     }
 
+    $pixParams = efi_gateway_variables('efi_pix');
+    if ($pixParams !== null) {
+        try {
+            $api = EfiClientFactory::make($pixParams, true);
+            (new EfiWhmcs\Pix\PixService($api, $pixParams))->cancelInvoiceCharge($invoiceId);
+        } catch (\Throwable $e) {
+            GatewayLog::error('efi_pix', $pixParams, 'Falha ao cancelar Pix no hook InvoiceCancelled', $e->getMessage());
+        }
+    }
+
     $automaticParams = efi_gateway_variables(PixAutomaticService::GATEWAY);
-    if (!empty($automaticParams['type'])) {
+    if ($automaticParams !== null) {
         try {
             $api = EfiClientFactory::make($automaticParams, true);
             (new PixAutomaticService($api, $automaticParams))->cancelInvoiceCharge($invoiceId);
@@ -56,6 +69,58 @@ add_hook('InvoiceCancelled', 1, function ($vars) {
             GatewayLog::error(PixAutomaticService::GATEWAY, $automaticParams, 'Falha ao cancelar cobrança Pix Automático no hook InvoiceCancelled', $e->getMessage());
         }
     }
+});
+
+/**
+ * Mesmo tratamento para InvoicePaid, InvoiceDeleted e InvoiceRefunded: uma fatura que sai do
+ * ciclo de cobrança por qualquer motivo não pode deixar boleto, Pix ou CobR em aberto -- é
+ * assim que a mesma fatura acaba sendo paga duas vezes (uma por outro meio, outra quando o
+ * cliente ainda consegue pagar a cobrança Efí esquecida). Reusa exatamente a mesma lógica do
+ * InvoiceCancelled.
+ */
+function efi_cancel_open_charges(int $invoiceId): void
+{
+    $boletoParams = efi_gateway_variables('efi_boleto');
+    if ($boletoParams !== null) {
+        try {
+            $api = EfiClientFactory::make($boletoParams);
+            (new BoletoService($api, $boletoParams))->cancel($invoiceId);
+        } catch (\Throwable $e) {
+            GatewayLog::error('efi_boleto', $boletoParams, 'Falha ao cancelar boleto após a fatura sair do ciclo de cobrança', $e->getMessage());
+        }
+    }
+
+    $pixParams = efi_gateway_variables('efi_pix');
+    if ($pixParams !== null) {
+        try {
+            $api = EfiClientFactory::make($pixParams, true);
+            (new EfiWhmcs\Pix\PixService($api, $pixParams))->cancelInvoiceCharge($invoiceId);
+        } catch (\Throwable $e) {
+            GatewayLog::error('efi_pix', $pixParams, 'Falha ao cancelar Pix após a fatura sair do ciclo de cobrança', $e->getMessage());
+        }
+    }
+
+    $automaticParams = efi_gateway_variables(PixAutomaticService::GATEWAY);
+    if ($automaticParams !== null) {
+        try {
+            $api = EfiClientFactory::make($automaticParams, true);
+            (new PixAutomaticService($api, $automaticParams))->cancelInvoiceCharge($invoiceId);
+        } catch (\Throwable $e) {
+            GatewayLog::error(PixAutomaticService::GATEWAY, $automaticParams, 'Falha ao cancelar cobrança Pix Automático após a fatura sair do ciclo de cobrança', $e->getMessage());
+        }
+    }
+}
+
+add_hook('InvoicePaid', 1, function ($vars) {
+    efi_cancel_open_charges((int) ($vars['invoiceid'] ?? 0));
+});
+
+add_hook('InvoiceRefunded', 1, function ($vars) {
+    efi_cancel_open_charges((int) ($vars['invoiceid'] ?? 0));
+});
+
+add_hook('InvoiceDeleted', 1, function ($vars) {
+    efi_cancel_open_charges((int) ($vars['invoiceid'] ?? 0));
 });
 
 add_hook('InvoiceCreated', 1, function ($vars) {
@@ -67,7 +132,7 @@ add_hook('InvoiceCreated', 1, function ($vars) {
     }
 
     $gatewayParams = efi_gateway_variables(PixAutomaticService::GATEWAY);
-    if (empty($gatewayParams['type'])) {
+    if ($gatewayParams === null) {
         return;
     }
 
@@ -97,22 +162,22 @@ add_hook('UpdateInvoiceTotal', 1, function ($vars) {
 
     $boletoParams = efi_gateway_variables('efi_boleto');
 
-    if ($boletoParams['type']) {
+    if ($boletoParams !== null) {
         try {
             $api = EfiClientFactory::make($boletoParams);
-            $message = (new BoletoService($api, $boletoParams))->realignDueDate($invoiceId, $invoice->duedate);
+            $message = (new BoletoService($api, $boletoParams))->realignDueDate($invoiceId, $invoice->duedate, EfiWhmcs\Support\Money::toCents($invoice->total));
 
             if ($message !== null) {
                 logTransaction('efi_boleto', ['invoice_id' => $invoiceId, 'new_duedate' => $invoice->duedate], $message);
             }
         } catch (\Throwable $e) {
-            GatewayLog::error('efi_boleto', $boletoParams, 'Falha ao realinhar vencimento no hook UpdateInvoiceTotal', $e->getMessage());
+            GatewayLog::error('efi_boleto', $boletoParams, 'Falha ao realinhar vencimento/valor no hook UpdateInvoiceTotal', $e->getMessage());
         }
     }
 
     $pixParams = efi_gateway_variables('efi_pix');
 
-    if (!$pixParams['type'] || $invoice->paymentmethod !== 'efi_pix') {
+    if ($pixParams === null || $invoice->paymentmethod !== 'efi_pix') {
         return;
     }
 
@@ -133,9 +198,15 @@ add_hook('UpdateInvoiceTotal', 1, function ($vars) {
 
 /**
  * Rede de segurança contra falha pontual de callback (fila de notificação enguiçada, firewall
- * bloqueando o IP da Efí, etc.): reconsulta diretamente cobranças de boleto/Pix que continuam
- * "em aberto" no nosso ledger há mais de alguns dias, e aplica o pagamento se a Efí já o
- * confirmou. Ver docs/ARQUITETURA.md, sugestão adicional §2.
+ * bloqueando o IP da Efí, etc.): reconsulta diretamente cobranças de boleto/Pix/cartão que
+ * continuam "em aberto" no nosso ledger há mais de 2 dias, e aplica o pagamento se a Efí já o
+ * confirmou. Parada de 60 dias no outro extremo: uma cobrança mais velha que isso já teve
+ * reconciliação suficiente e só continuaria crescendo a consulta diária para sempre; vira um
+ * aviso no Module Log em vez de repetir a consulta à Efí indefinidamente.
+ *
+ * Também agenda, dentro da janela de 2 a 10 dias exigida pelo Bacen, as CobRs do Pix Automático
+ * que o hook `InvoiceCreated` adiou por a fatura ter nascido cedo demais, e reprocessa qualquer
+ * CobR que ficou `error` na última tentativa.
  */
 add_hook('DailyCronJob', 1, function () {
     if (!function_exists('getInvoiceStatusColour')) {
@@ -145,11 +216,12 @@ add_hook('DailyCronJob', 1, function () {
     EfiWhmcs\Ledger\Schema::ensure();
 
     $staleSince = date('Y-m-d H:i:s', strtotime('-2 days'));
+    $tooOldSince = date('Y-m-d H:i:s', strtotime('-60 days'));
 
     $staleBoletos = Capsule::table('mod_efi_charges')
         ->where('rail', 'boleto')
         ->whereIn('status', ['new', 'waiting', 'unpaid'])
-        ->where('created_at', '<', $staleSince)
+        ->whereBetween('created_at', [$tooOldSince, $staleSince])
         ->get();
 
     if ($staleBoletos->isNotEmpty()) {
@@ -159,14 +231,40 @@ add_hook('DailyCronJob', 1, function () {
     $stalePix = Capsule::table('mod_efi_charges')
         ->where('rail', 'pix')
         ->whereIn('status', ['ATIVA', 'new'])
-        ->where('created_at', '<', $staleSince)
+        ->whereBetween('created_at', [$tooOldSince, $staleSince])
         ->get();
 
     if ($stalePix->isNotEmpty()) {
         efi_reconcile_pix($stalePix);
     }
 
+    $staleCards = Capsule::table('mod_efi_charges')
+        ->where('rail', 'cartao')
+        ->where('status', 'waiting')
+        ->whereBetween('created_at', [$tooOldSince, $staleSince])
+        ->get();
+
+    if ($staleCards->isNotEmpty()) {
+        efi_reconcile_cartao($staleCards);
+    }
+
+    $tooOldCharges = Capsule::table('mod_efi_charges')
+        ->whereIn('rail', ['boleto', 'pix', 'cartao'])
+        ->whereIn('status', ['new', 'waiting', 'unpaid', 'ATIVA'])
+        ->where('created_at', '<', $tooOldSince)
+        ->get();
+
+    foreach ($tooOldCharges as $charge) {
+        GatewayLog::error($charge->rail === 'cartao' ? 'efi_cartao' : ('efi_' . $charge->rail), [], 'Cobrança aberta há mais de 60 dias sem confirmação -- revisão manual necessária', [
+            'invoice_id' => $charge->invoice_id,
+            'charge_id' => $charge->efi_charge_id,
+            'status' => $charge->status,
+            'created_at' => $charge->created_at,
+        ]);
+    }
+
     EfiWhmcs\PixAutomatic\Schema::ensure();
+
     $staleAutomaticPix = Capsule::table('mod_efi_pix_auto_charges')
         ->whereIn('status', ['creating', 'CRIADA', 'ATIVA'])
         ->where('updated_at', '<', $staleSince)
@@ -175,13 +273,52 @@ add_hook('DailyCronJob', 1, function () {
     if ($staleAutomaticPix->isNotEmpty()) {
         efi_reconcile_pix_automatico($staleAutomaticPix);
     }
+
+    $automaticParams = efi_gateway_variables(PixAutomaticService::GATEWAY);
+    if ($automaticParams !== null) {
+        try {
+            $api = EfiClientFactory::make($automaticParams, true);
+            $service = new PixAutomaticService($api, $automaticParams);
+
+            $dueInvoices = Capsule::table('tblinvoices')
+                ->where('paymentmethod', PixAutomaticService::GATEWAY)
+                ->where('status', 'Unpaid')
+                ->whereBetween('duedate', [date('Y-m-d', strtotime('+2 days')), date('Y-m-d', strtotime('+10 days'))])
+                ->get(['id', 'userid', 'total', 'duedate']);
+
+            foreach ($dueInvoices as $invoice) {
+                try {
+                    $message = $service->scheduleInvoice($invoice);
+                    if ($message !== null) {
+                        logTransaction(PixAutomaticService::GATEWAY, ['invoice_id' => $invoice->id], $message);
+                    }
+                } catch (\Throwable $e) {
+                    GatewayLog::error(PixAutomaticService::GATEWAY, $automaticParams, 'Falha ao agendar CobR dentro da janela no cron', ['invoice' => $invoice->id, 'error' => $e->getMessage()]);
+                }
+            }
+
+            $erroredCharges = Capsule::table('mod_efi_pix_auto_charges')->where('status', 'error')->get();
+            foreach ($erroredCharges as $charge) {
+                try {
+                    $message = $service->retryErroredCharge($charge);
+                    if ($message !== null) {
+                        logTransaction(PixAutomaticService::GATEWAY, ['invoice_id' => $charge->invoice_id], 'Retentativa de CobR com erro: ' . $message);
+                    }
+                } catch (\Throwable $e) {
+                    GatewayLog::error(PixAutomaticService::GATEWAY, $automaticParams, 'Falha ao reprocessar CobR com erro no cron', ['invoice' => $charge->invoice_id, 'error' => $e->getMessage()]);
+                }
+            }
+        } catch (\Throwable $e) {
+            GatewayLog::error(PixAutomaticService::GATEWAY, $automaticParams, 'Cron Pix Automático: falha ao montar client', $e->getMessage());
+        }
+    }
 });
 
 function efi_reconcile_boleto($charges): void
 {
     $gatewayParams = efi_gateway_variables('efi_boleto');
 
-    if (!$gatewayParams['type']) {
+    if ($gatewayParams === null) {
         return;
     }
 
@@ -212,11 +349,46 @@ function efi_reconcile_boleto($charges): void
     }
 }
 
+function efi_reconcile_cartao($charges): void
+{
+    $gatewayParams = efi_gateway_variables('efi_cartao');
+
+    if ($gatewayParams === null) {
+        return;
+    }
+
+    try {
+        $api = EfiClientFactory::make($gatewayParams);
+    } catch (\Throwable $e) {
+        GatewayLog::error('efi_cartao', $gatewayParams, 'Reconciliação diária: falha ao montar client', $e->getMessage());
+        return;
+    }
+
+    foreach ($charges as $charge) {
+        try {
+            $detail = $api->detailCharge(['id' => $charge->efi_charge_id]);
+            $status = (string) ($detail['data']['status']['current'] ?? $detail['status'] ?? '');
+
+            if (in_array($status, ['paid', 'approved'], true) && $charge->status !== 'paid') {
+                logTransaction('efi_cartao', ['invoice_id' => $charge->invoice_id, 'charge_id' => $charge->efi_charge_id], 'Reconciliação diária detectou pagamento de cartão não aplicado pelo callback');
+                $invoiceId = checkCbInvoiceID((int) $charge->invoice_id, 'efi_cartao');
+                checkCbTransID($charge->efi_charge_id . ':reconcile');
+                addInvoicePayment($invoiceId, $charge->efi_charge_id, 0, 0, 'efi_cartao');
+                EfiWhmcs\Ledger\ChargeRepository::updateStatus($charge->id, 'paid');
+            } elseif ($status !== '' && $status !== $charge->status) {
+                EfiWhmcs\Ledger\ChargeRepository::updateStatus($charge->id, $status);
+            }
+        } catch (\Throwable $e) {
+            GatewayLog::error('efi_cartao', $gatewayParams, 'Reconciliação diária falhou para charge_id ' . $charge->efi_charge_id, $e->getMessage());
+        }
+    }
+}
+
 function efi_reconcile_pix($charges): void
 {
     $gatewayParams = efi_gateway_variables('efi_pix');
 
-    if (!$gatewayParams['type']) {
+    if ($gatewayParams === null) {
         return;
     }
 
@@ -235,11 +407,22 @@ function efi_reconcile_pix($charges): void
 
             if ($status === 'CONCLUIDA' && $pixRecebidos !== [] && $charge->status !== 'CONCLUIDA') {
                 $recebido = $pixRecebidos[0];
+                $e2eId = (string) ($recebido['endToEndId'] ?? $charge->efi_charge_id);
                 logTransaction('efi_pix', ['invoice_id' => $charge->invoice_id, 'txid' => $charge->efi_charge_id], 'Reconciliação diária detectou pagamento Pix não notificado via webhook');
                 $invoiceId = checkCbInvoiceID((int) $charge->invoice_id, 'efi_pix');
-                checkCbTransID(($recebido['endToEndId'] ?? $charge->efi_charge_id) . ':reconcile');
-                addInvoicePayment($invoiceId, $recebido['endToEndId'] ?? $charge->efi_charge_id, \EfiWhmcs\Support\Money::toReais((int) round(((float) $recebido['valor']) * 100)), 0, 'efi_pix');
-                EfiWhmcs\Ledger\ChargeRepository::updateStatus($charge->id, 'CONCLUIDA');
+                checkCbTransID($e2eId . ':reconcile');
+                addInvoicePayment($invoiceId, $e2eId, \EfiWhmcs\Support\Money::toReais((int) round(((float) $recebido['valor']) * 100)), 0, 'efi_pix');
+
+                $metadata = json_decode((string) $charge->metadata, true) ?: [];
+                $metadata['e2e_id'] = $e2eId;
+                EfiWhmcs\Ledger\ChargeRepository::replacePixCharge(
+                    $charge->id,
+                    $charge->efi_charge_id,
+                    $charge->efi_loc_id,
+                    'CONCLUIDA',
+                    (int) $charge->amount_cents,
+                    json_encode($metadata) ?: '{}'
+                );
             }
         } catch (\Throwable $e) {
             GatewayLog::error('efi_pix', $gatewayParams, 'Reconciliação diária falhou para txid ' . $charge->efi_charge_id, $e->getMessage());
@@ -250,7 +433,7 @@ function efi_reconcile_pix($charges): void
 function efi_reconcile_pix_automatico($charges): void
 {
     $gatewayParams = efi_gateway_variables(PixAutomaticService::GATEWAY);
-    if (empty($gatewayParams['type'])) {
+    if ($gatewayParams === null) {
         return;
     }
 
@@ -310,9 +493,10 @@ add_hook('AdminInvoicesControlsOutput', 1, function ($vars) {
 
     $systemUrl = rtrim((string) \WHMCS\Config\Setting::getValue('SystemURL'), '/');
     $controls = '';
+    $csrfToken = AdminCsrf::token();
     $cardParams = efi_gateway_variables('efi_cartao');
 
-    if ($cardParams['type']) {
+    if ($cardParams !== null) {
         $controls .= '<button type="button" class="btn btn-default btn-sm" id="efiCaptureBtn' . $invoiceId . '">Tentar Capturar Pagamento (Efí)</button>
         <script>
         (function () {
@@ -324,7 +508,7 @@ add_hook('AdminInvoicesControlsOutput', 1, function ($vars) {
                     method: "POST",
                     credentials: "same-origin",
                     headers: { "Content-Type": "application/x-www-form-urlencoded" },
-                    body: "invoiceid=' . $invoiceId . '"
+                    body: "invoiceid=' . $invoiceId . '&csrf=' . rawurlencode($csrfToken) . '"
                 }).then(function (r) { return r.json(); }).then(function (data) {
                     alert(data.message || (data.success ? "Sucesso" : "Falha"));
                     window.location.reload();
@@ -340,7 +524,7 @@ add_hook('AdminInvoicesControlsOutput', 1, function ($vars) {
     $pixParams = efi_gateway_variables('efi_pix');
     $paymentMethod = Capsule::table('tblinvoices')->where('id', $invoiceId)->value('paymentmethod');
 
-    if ($pixParams['type'] && $paymentMethod === 'efi_pix') {
+    if ($pixParams !== null && $paymentMethod === 'efi_pix') {
         $controls .= '<button type="button" class="btn btn-warning btn-sm" id="efiRegeneratePixBtn' . $invoiceId . '">Gerar nova cobrança Pix</button>
         <script>
         (function () {
@@ -353,7 +537,7 @@ add_hook('AdminInvoicesControlsOutput', 1, function ($vars) {
                     method: "POST",
                     credentials: "same-origin",
                     headers: { "Content-Type": "application/x-www-form-urlencoded" },
-                    body: "invoiceid=' . $invoiceId . '"
+                    body: "invoiceid=' . $invoiceId . '&csrf=' . rawurlencode($csrfToken) . '"
                 }).then(function (r) { return r.json(); }).then(function (data) {
                     alert(data.message || (data.success ? "Sucesso" : "Falha"));
                     if (data.success) { window.location.reload(); } else { btn.disabled = false; }

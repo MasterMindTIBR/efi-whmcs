@@ -56,13 +56,6 @@ function efi_cartao_config()
             'Default' => '1',
             'Description' => 'Número máximo de parcelas oferecido no checkout. 1 desativa o parcelamento.',
         ],
-        'tds_required_above_amount' => [
-            'FriendlyName' => '3D Secure obrigatório acima de (R$)',
-            'Type' => 'text',
-            'Size' => '10',
-            'Default' => '',
-            'Description' => 'Deixe em branco para nunca exigir 3DS. Recorrência automática (cliente ausente) nunca usa 3DS, independente deste valor.',
-        ],
         'document_field_name' => [
             'FriendlyName' => 'Campo personalizado de CPF/CNPJ',
             'Type' => 'text',
