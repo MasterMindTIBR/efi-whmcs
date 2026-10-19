@@ -75,18 +75,17 @@ if (!empty($pixParams['type'])) {
             $metadata['e2e_id'] = $transition['e2eId'];
             ChargeRepository::updateMetadata((int) $charge->id, json_encode($metadata) ?: '{}');
 
-            $alreadyConcluded = $charge->status === 'CONCLUIDA';
-
-            if (!$alreadyConcluded) {
-                (new PixService($api, $pixParams))->applyDiscountLineItem($invoiceId, (int) $transition['valueCents']);
-            }
+            $pixService = new PixService($api, $pixParams);
 
             PaymentApplier::apply([
                 'invoiceId' => $invoiceId, 'transId' => $transition['e2eId'],
                 'amountCents' => (int) $transition['valueCents'], 'module' => 'efi_pix',
                 'gatewayParams' => $pixParams, 'chargeId' => (int) $charge->id,
                 'eventId' => (int) $transition['eventId'],
-                'markPaid' => static function () use ($charge): void { ChargeRepository::updateStatus((int) $charge->id, 'CONCLUIDA'); },
+                'markPaid' => static function () use ($pixService, $invoiceId, $transition, $charge): void {
+                    $pixService->applyDiscountLineItem($invoiceId, (int) $transition['valueCents']);
+                    ChargeRepository::updateStatus((int) $charge->id, 'CONCLUIDA');
+                },
             ]);
         }
     } catch (\Throwable $e) {

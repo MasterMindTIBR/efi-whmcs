@@ -4,8 +4,10 @@ declare(strict_types=1);
 
 namespace Tests\Unit;
 
+use Efi\EfiPay;
 use EfiWhmcs\Ledger\EventRepository;
 use EfiWhmcs\Ledger\Schema;
+use EfiWhmcs\Pix\PixService;
 use EfiWhmcs\PixAutomatic\Repository as PixAutomaticRepository;
 use EfiWhmcs\PixAutomatic\Schema as PixAutomaticSchema;
 use EfiWhmcs\Support\PaymentApplier;
@@ -25,6 +27,8 @@ final class PaymentApplierTest extends TestCase
         Capsule::table('mod_efi_charges')->insert(['id' => 1, 'invoice_id' => 1, 'rail' => 'boleto', 'efi_charge_id' => 'charge-1', 'status' => 'waiting', 'amount_cents' => 1000, 'created_at' => date('Y-m-d H:i:s'), 'updated_at' => date('Y-m-d H:i:s')]);
         $GLOBALS['efi_test_invoice_payments'] = [];
         $GLOBALS['efi_test_log_transactions'] = [];
+        $GLOBALS['efi_test_local_api_calls'] = [];
+        unset($GLOBALS['efi_test_local_api_fn']);
         $GLOBALS['efi_test_add_invoice_payment_fn'] = static function (int $invoiceId, string $transId, $amount): void {
             Capsule::table('tblaccounts')->insert(['invoiceid' => $invoiceId, 'amountin' => $amount, 'transid' => $transId]);
             Capsule::table('tblinvoices')->where('id', $invoiceId)->update(['status' => 'Paid']);
@@ -114,6 +118,41 @@ final class PaymentApplierTest extends TestCase
         self::assertTrue(PaymentApplier::apply($this->payment($eventId, 'retry-e2e')));
         self::assertSame('applied', Capsule::table('mod_efi_events')->where('id', $eventId)->value('status'));
         self::assertNull(EventRepository::tryClaim(1, 'retry-me', 'waiting', 'paid', 'charge-1'));
+    }
+
+    public function testRetriedPendingPixEventLaunchesItsDiscountOnlyAfterTheSuccessfulApply(): void
+    {
+        Capsule::table('mod_efi_charges')->insert([
+            'id' => 2, 'invoice_id' => 1, 'rail' => 'pix', 'efi_charge_id' => 'pix-charge-2',
+            'status' => 'ATIVA', 'amount_cents' => 900,
+            'metadata' => json_encode(['base_amount_cents' => 1000, 'discount_percent' => 10]),
+            'created_at' => date('Y-m-d H:i:s'), 'updated_at' => date('Y-m-d H:i:s'),
+        ]);
+        $eventId = EventRepository::tryClaim(2, 'pix-pending', 'ATIVA', 'CONCLUIDA', 'pix-charge-2');
+        self::assertIsInt($eventId);
+
+        $pixService = new PixService($this->createMock(EfiPay::class), ['debug_level' => 'errors']);
+        $payment = [
+            'invoiceId' => 1, 'transId' => 'pix-e2e-pending', 'amountCents' => 900,
+            'module' => 'efi_pix', 'gatewayParams' => ['debug_level' => 'errors'],
+            'chargeId' => 2, 'eventId' => $eventId,
+            'markPaid' => static function () use ($pixService): void {
+                $pixService->applyDiscountLineItem(1, 900);
+                Capsule::table('mod_efi_charges')->where('id', 2)->update(['status' => 'CONCLUIDA']);
+            },
+        ];
+
+        Capsule::table('tblinvoices')->where('id', 1)->update(['status' => 'Paid']);
+        self::assertFalse(PaymentApplier::apply($payment));
+        self::assertSame('pending', Capsule::table('mod_efi_events')->where('id', $eventId)->value('status'));
+        self::assertCount(0, $GLOBALS['efi_test_local_api_calls']);
+
+        self::assertSame($eventId, EventRepository::tryClaim(2, 'pix-pending', 'ATIVA', 'CONCLUIDA', 'pix-charge-2'));
+        Capsule::table('tblinvoices')->where('id', 1)->update(['status' => 'Unpaid']);
+
+        self::assertTrue(PaymentApplier::apply($payment));
+        self::assertCount(1, $GLOBALS['efi_test_local_api_calls']);
+        self::assertSame('UpdateInvoice', $GLOBALS['efi_test_local_api_calls'][0]['command']);
     }
 
     public function testPendingPixAutomaticClaimCanBeRetriedUntilItIsApplied(): void

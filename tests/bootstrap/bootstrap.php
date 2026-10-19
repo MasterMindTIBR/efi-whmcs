@@ -82,4 +82,17 @@ if (!function_exists('addInvoicePayment')) {
     }
 }
 
+if (!function_exists('localAPI')) {
+    function localAPI(string $command, array $params, $adminUsername = null): array
+    {
+        $GLOBALS['efi_test_local_api_calls'][] = compact('command', 'params', 'adminUsername');
+
+        if (isset($GLOBALS['efi_test_local_api_fn'])) {
+            return ($GLOBALS['efi_test_local_api_fn'])($command, $params, $adminUsername);
+        }
+
+        return ['result' => 'success'];
+    }
+}
+
 efi_test_boot_database();

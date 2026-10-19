@@ -457,11 +457,15 @@ function efi_reconcile_pix($charges): void
                 $eventId = EfiWhmcs\Ledger\EventRepository::tryClaim((int) $charge->id, 'reconcile:' . $e2eId, $charge->status, 'CONCLUIDA', $charge->efi_charge_id);
                 if ($eventId !== null) {
                     $receivedAmountCents = (int) round(((float) $recebido['valor']) * 100);
-                    (new EfiWhmcs\Pix\PixService($api, $gatewayParams))->applyDiscountLineItem((int) $charge->invoice_id, $receivedAmountCents);
+                    $pixService = new EfiWhmcs\Pix\PixService($api, $gatewayParams);
                     PaymentApplier::apply([
                         'invoiceId' => (int) $charge->invoice_id, 'transId' => $e2eId, 'amountCents' => $receivedAmountCents,
                         'module' => 'efi_pix', 'gatewayParams' => $gatewayParams, 'eventId' => $eventId,
-                        'markPaid' => static function () use ($charge, $metadata): void { EfiWhmcs\Ledger\ChargeRepository::updateMetadata((int) $charge->id, json_encode($metadata) ?: '{}'); EfiWhmcs\Ledger\ChargeRepository::updateStatus((int) $charge->id, 'CONCLUIDA'); },
+                        'markPaid' => static function () use ($pixService, $charge, $metadata, $receivedAmountCents): void {
+                            $pixService->applyDiscountLineItem((int) $charge->invoice_id, $receivedAmountCents);
+                            EfiWhmcs\Ledger\ChargeRepository::updateMetadata((int) $charge->id, json_encode($metadata) ?: '{}');
+                            EfiWhmcs\Ledger\ChargeRepository::updateStatus((int) $charge->id, 'CONCLUIDA');
+                        },
                     ]);
                 }
             }
