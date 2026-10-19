@@ -70,11 +70,28 @@ precisam ser recadastrados pelo cliente.
 
 Para a recorrência automática funcionar, o cliente precisa ter, no cadastro: um CPF/CNPJ válido
 no Campo Personalizado configurado (o módulo grava automaticamente o documento digitado no
-checkout, se o campo ainda estiver vazio) e um telefone brasileiro válido.
+checkout quando o campo está vazio ou com valor inválido) e um telefone brasileiro válido.
+
+**Política de `approved`**: a Efí devolve `approved` antes da análise antifraude terminar. O
+módulo já dá a fatura como paga em `approved` (o cliente vê "Pagamento em análise" no checkout).
+Se a Efí depois derrubar a cobrança (`approved`/`paid` → `unpaid`/`canceled`), o módulo desfaz o
+crédito — lança uma saída (`AddTransaction` com `amountout`, transid `<charge_id>-reversao`),
+reabre a fatura como `Unpaid` e grava um alerta **CRÍTICO** no Log do Módulo. A suspensão do
+serviço, se for o caso, fica a seu critério. `refunded`/`contested`/`charged_back` só geram
+alerta; o tratamento contábil é manual.
 
 Estorno: o módulo usa sempre o `transid` informado pelo próprio WHMCS (nunca presume "a última
-cobrança desta fatura"), e marca a cobrança como `partially_refunded` quando o valor estornado é
-menor que o total cobrado.
+cobrança desta fatura"), soma os estornos parciais já feitos e marca a cobrança como
+`partially_refunded` até o total estornado alcançar o valor cobrado.
+
+**Runbook — cobrança de cartão com resultado desconhecido**: se a chamada à Efí cair por
+timeout/erro de rede, o resultado real é desconhecido e a cobrança fica `unknown` (ou
+`failed-unknown`, se nem o `charge_id` foi recebido). Nesses estados o módulo **recusa** nova
+tentativa automática para a fatura (o cliente vê "Não tente de novo…") — retentar poderia cobrar
+o cartão duas vezes. Resolução: procure a cobrança no painel da Efí pelo `custom_id`
+`whmcs_invoice_<id da fatura>`. Se foi cobrada, registre o pagamento manualmente no WHMCS com o
+`charge_id` como transid; se não foi, altere o status da linha em `mod_efi_charges` para
+`canceled` para liberar uma nova tentativa.
 
 ### Pix
 
@@ -121,8 +138,12 @@ menor que o total cobrado.
    reprocessa CobR que falhou (`status=error`) automaticamente.
 5. **Faturas sem CobR agendada não ficam sem forma de pagamento**: se a CobR da fatura não
    existir (fora da janela, erro de agendamento, etc.), o módulo oferece automaticamente um Pix
-   avulso para aquela fatura específica, usando a mesma chave Pix já configurada neste gateway —
-   as próximas faturas continuam automáticas normalmente.
+   avulso para aquela fatura específica, usando a mesma chave e credenciais já configuradas
+   neste gateway — as próximas faturas continuam automáticas normalmente. Esse Pix avulso é
+   creditado, reconciliado e cancelado com as credenciais do Pix Automático mesmo com o gateway
+   **Efí - Pix** inativo. Estorno desse Pix avulso (e das CobR) não é feito pelo botão de
+   reembolso do WHMCS (o gateway não implementa `_refund`): devolva pelo painel da Efí e registre
+   o estorno manualmente.
 6. O webhook comum de Pix aceita os segredos de Pix imediato e Pix Automático; a chave Pix usada
    para o Pix avulso de fallback (item 5) é sempre a configurada neste próprio gateway.
 7. **Runbook — autorização presa em "criando"**: se o processo morrer entre o pedido de
@@ -132,9 +153,10 @@ menor que o total cobrado.
    duplicidade. Resolução: consulte o painel da Efí pelo `contrato` (`WHMCS-<client_id>`) e
    decida manualmente entre reaproveitar o `idRec` existente (grave em
    `mod_efi_pix_auto_recurrences.efi_recurrence_id`) ou cancelar e deixar o cliente reiniciar.
-8. **Risco conhecido, não validado em sandbox**: o payload de `recebedor` (campo exigido pelo
-   Banco Central em toda CobR) segue o spec publicado, mas não foi testado contra o sandbox real
-   da Efí nesta reescrita por falta de credenciais. Valide antes de ativar para cliente real.
+8. **Pendências de validação (sandbox Efí)**: o payload de `recebedor` (campo exigido pelo
+   Banco Central em toda CobR) e o texto do erro "txid já utilizado" em 400 seguem o spec
+   publicado, mas não foram testados contra o sandbox real da Efí. Valide antes de ativar para
+   cliente real.
 
 ### Hooks e recorrência
 
@@ -182,14 +204,19 @@ arquivo do SDK que não deveria ser servido como estático.
 O cron diário do WHMCS (`php -q crons/cron.php` ou o cron nativo da Automation Settings) precisa
 rodar para que o módulo funcione de forma confiável — ele é responsável por:
 
-- Reconciliar pagamentos de boleto, cartão e Pix que não chegaram via webhook (rede de
-  segurança), numa janela de 2 a 60 dias.
+- Reconciliar pagamentos de boleto, cartão (`waiting` e `approved`) e Pix que não chegaram via
+  webhook (rede de segurança), numa janela de 2 a 60 dias. Cada Pix é consultado com as
+  credenciais do gateway que o emitiu (Pix imediato ou Pix avulso do Pix Automático).
+- Pix Automático: consultar autorizações ainda pendentes (`CRIADA`) e o Pix inicial de faturas
+  que continuam em aberto — se o webhook `/rec` ou o do pagamento inicial se perder, a
+  autorização e o crédito da primeira fatura ainda acontecem.
 - Agendar CobR do Pix Automático dentro da janela de 2 a 10 dias antes do vencimento, e
   reprocessar CobR que falhou.
 - Resolver cobranças/reservas presas em `creating` há mais de 10 minutos (reconcilia se já
   houver identificador capturado; marca `failed-unknown`/sinaliza para revisão manual, senão).
 - Reprocessar eventos de webhook que ficaram `pending` (ex.: um crash entre registrar o evento e
-  aplicar o pagamento).
+  aplicar o pagamento) e fechar esses eventos quando a cobrança já estiver resolvida (paga,
+  cancelada, expirada), para não voltarem à fila todo dia.
 
 Em instalações com Cobrança Automática de Faturas desativada ou cron não configurado, nenhum
 desses mecanismos roda, e você depende inteiramente do callback síncrono/webhook.
@@ -205,9 +232,10 @@ desses mecanismos roda, e você depende inteiramente do callback síncrono/webho
   (`efi_pix`/`efi_pix_automatico`) para a mensagem exata de rejeição.
 - **Webhook chega mas o pagamento não aparece na fatura**: confira o Log do Módulo por
   "pagamento recebido fora do ciclo de cobrança" (a fatura já estava Paga/Cancelada/Refunded por
-  outro meio quando o webhook chegou — resolução é manual, gerar crédito ou estornar conforme a
-  política do lojista) ou por um erro de rede/lock (`Falha ao obter trava da fatura`), que se
-  autorresolve na próxima reconciliação do cron.
+  outro meio quando o webhook chegou — o evento é fechado como `failed` e a resolução é manual:
+  gerar crédito ou estornar conforme a política do lojista) ou por um erro de rede/lock
+  (`Falha ao obter trava da fatura`): nesse caso o evento fica `pending` e o cron diário o
+  reprocessa consultando a Efí.
 - **CPF/CNPJ sempre recusado no formulário de boleto/cartão/Pix**: confira se o Campo
   Personalizado configurado (`document_field_name`) já tem um valor com dígito verificador
   válido; se tiver um valor inválido salvo, o módulo usa o valor digitado no formulário em vez

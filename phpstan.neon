@@ -16,6 +16,8 @@ parameters:
         - '#Function [a-zA-Z_]+ not found\.#'
         - '#unknown class WHMCS\\#'
         - '#unknown class Illuminate\\#'
+        - '#unknown class App\.#'
+        - '#has invalid return type Illuminate\\#'
         - '#Constant WHMCS not found\.#'
         - '#Constant ROOTDIR not found\.#'
         # Assinatura divergente do SDK da Efí (`getNotification`) que não afeta nosso uso real

@@ -5,9 +5,8 @@ Formato baseado em [Keep a Changelog](https://keepachangelog.com/pt-BR/1.0.0/).
 
 ## [Unreleased]
 
-Produção endurecida numa clarity break de 5 rocks (auditoria completa em `ISSUES.md`,
-plano em `PLAN.md`). Cada item abaixo corrige um problema real, verificado no código (não
-apenas documentado) e coberto por teste automatizado ou lint/análise estática, quando aplicável.
+Endurecimento para produção. Cada item abaixo descreve uma mudança presente no código; os que
+têm teste automatizado estão cobertos na suíte de `tests/` (ver "Testes").
 
 ### Adicionado
 
@@ -30,8 +29,8 @@ apenas documentado) e coberto por teste automatizado ou lint/análise estática,
   reverso confiável (leitura de `X-Forwarded-For` só quando o IP imediato é um proxy
   configurado); origem rejeitada responde HTTP 403 (não 200), permitindo que a Efí reenvie.
 - Pix Automático: opção de agência/conta/tipo de conta do recebedor (`recebedor`, campo
-  obrigatório do Banco Central em toda CobR). [INFERENCE: formato não validado em sandbox real
-  por falta de credenciais nesta sessão — valide antes de ativar para cliente real.]
+  obrigatório do Banco Central em toda CobR). Formato ainda não validado em sandbox Efí —
+  valide antes de ativar para cliente real.
 - Pix Automático: fatura sem CobR agendada (fora da janela de 2-10 dias, erro, etc.) ganha um
   Pix avulso automático como alternativa, em vez de ficar sem forma de pagamento.
 - `modules/gateways/efi/vendor/.htaccess`: nega acesso HTTP direto ao SDK e dependências em
@@ -39,12 +38,17 @@ apenas documentado) e coberto por teste automatizado ou lint/análise estática,
 - `includes/hooks/disable_unsafe_card_delete.php`: versionado (antes só existia manualmente no
   staging) — desabilita visualmente o link "Excluir" do único cartão Efí salvo ou do cartão
   padrão, na tela de Métodos de Pagamento do cliente.
-- CI (`release.yml`) roda em todo push/PR: lint em PHP 8.1/8.2/8.3, PHPStan nível 2, suíte de
-  testes unitários (SQLite) e um teste de concorrência real contra MySQL (dois processos
-  disputando a aplicação do mesmo pagamento, e dois pagamentos distintos concorrentes para a
-  mesma fatura — prova que só um aplica). Empacotamento e release do GitHub continuam só em tag,
-  agora depois do CI passar e com o zip construído antes da release ser criada (nunca mais uma
-  release publicada sem o zip).
+- CI (`release.yml`) roda em todo push/PR: lint em PHP 8.1/8.2/8.3, PHPStan nível 2 (versão
+  fixada), verificação de que o patch local do SDK (`EFI_SDK_CACHE_DIR` em
+  `FileCacheRetriever.php`) continua aplicado, testes unitários (SQLite) e de integração contra
+  MySQL real (concorrência na aplicação do pagamento e upgrade de um ledger legado) em PHP 8.1 e
+  8.3. Empacotamento e release do GitHub continuam só em tag, depois do CI passar e com o zip
+  construído antes da release ser criada.
+- Pix Automático: o cron diário consulta autorizações pendentes (`CRIADA`) e o Pix inicial de
+  faturas ainda em aberto — perder o webhook `/rec` ou o do pagamento inicial não deixa mais a
+  autorização e a primeira fatura presas para sempre.
+- Pix Automático: campo "Proxies confiáveis do webhook" (antes só existia no gateway Pix).
+- Pix Automático: logo do gateway (`logo.png` + `whmcs.json`).
 
 ### Alterado
 
@@ -77,11 +81,12 @@ apenas documentado) e coberto por teste automatizado ou lint/análise estática,
 - Emissão de boleto e cobrança de cartão reservam uma linha `creating` sob trava nomeada por
   fatura (`GET_LOCK`) antes de chamar a API da Efí — duas abas/requisições concorrentes para a
   mesma fatura não geram mais duas cobranças reais.
-- Reconciliação diária: janela de 2 a 60 dias (incluindo cartão `waiting`), leitura corrigida do
-  status retornado pela API (`data.status`, não `data.status.current`, que nunca existiu),
-  aplicação de pagamento sempre via `PaymentApplier`, e reprocessamento automático de eventos de
-  webhook que ficaram `pending` (crash entre registrar o evento e aplicar o pagamento) e de
-  reservas `creating` travadas há mais de 10 minutos.
+- Reconciliação diária: janela de 2 a 60 dias (incluindo cartão `waiting` e `approved`), leitura
+  corrigida do status retornado pela API (`data.status`, não `data.status.current`, que nunca
+  existiu), aplicação de pagamento sempre via `PaymentApplier`, reprocessamento de eventos de
+  webhook que ficaram `pending` e de reservas `creating` travadas há mais de 10 minutos. O
+  evento `pending` original é fechado quando a cobrança já está resolvida (antes voltava à fila
+  todo dia, para sempre).
 
 ### Corrigido
 
@@ -100,7 +105,16 @@ apenas documentado) e coberto por teste automatizado ou lint/análise estática,
 - O ledger local é marcado `paid`/`CONCLUIDA` ANTES de chamar `addInvoicePayment`: o hook
   `InvoicePaid`, disparado de forma síncrona dentro dessa mesma chamada, já enxerga a cobrança
   como paga e não tenta cancelá-la (antes, cancelar boleto/Pix/CobR no ciclo de vida da fatura
-  podia cancelar a cobrança que acabou de ser paga).
+  podia cancelar a cobrança que acabou de ser paga). Vale também para o desconto: o status é
+  gravado antes do `UpdateInvoice` do item de desconto, que dispara `UpdateInvoiceTotal`.
+- Pagamento recebido fora do ciclo (fatura já paga/cancelada) grava a cobrança como recebida e
+  fecha o evento como `failed`, em vez de deixá-lo `pending` e reprocessá-lo todo dia.
+- Upgrade de instalações com histórico real: a migração v1 tentava converter
+  `mod_efi_charges.status` para `ENUM`, o que falhava em MySQL estrito ("Data truncated") com
+  valores antigos como `error` ou `REMOVIDA_PELO_USUARIO_RECEBEDOR`. A coluna fica `VARCHAR(32)`.
+- Instalação já migrada paga uma única consulta por requisição para verificar o schema (antes
+  eram consultas a `information_schema` + leituras de versão em toda requisição).
+- `InvoiceBalance::centsDue()` desconta as saídas (`amountout`), como o saldo do WHMCS.
 
 #### Pix imediato
 
@@ -122,6 +136,14 @@ apenas documentado) e coberto por teste automatizado ou lint/análise estática,
   um namespace de evento próprio (`devolucao:<rtrId>`) e aparecem no Log do Módulo para revisão
   manual (o módulo não lança estorno contábil automático no WHMCS — decisão de política de
   cobrança do lojista, não bug de código).
+- O Pix avulso de fallback do Pix Automático passa a ser creditado, reconciliado, cancelado e
+  revisado com as credenciais do gateway que o emitiu — antes o webhook e o cron só processavam
+  Pix com o gateway **Efí - Pix** ativo, e com ele inativo esse pagamento nunca era creditado.
+- Estorno Pix pelo WHMCS localiza a cobrança pelo `e2eId` (transid do pagamento). Antes buscava
+  só cobranças ativas, e toda cobrança paga está `CONCLUIDA`: o estorno sempre falhava.
+- "Gerar nova cobrança Pix" (admin) e a revisão automática de valor usam o saldo da fatura, não
+  o total.
+- Pix e boleto recusam emitir cobrança quando a moeda do cliente não é BRL.
 
 #### Boleto
 
@@ -136,14 +158,27 @@ apenas documentado) e coberto por teste automatizado ou lint/análise estática,
   do processo PHP.
 - Removido o hook `InvoiceDeleted`: não é um hook point real do WHMCS (fora do índice oficial),
   o handler nunca disparava.
+- Falha da API na emissão marca a reserva como `error` (antes ficava `creating` até o cron).
+- Realinhamento de valor compara com o valor-base emitido (`base_amount_cents`), não com o valor
+  já com desconto — antes todo boleto com desconto era reemitido sem necessidade.
 
 #### Cartão
 
 - O valor cobrado é sempre calculado no servidor a partir do **saldo** da fatura (nunca do
   total, nunca de algo enviado pelo navegador) — tanto no checkout quanto na recorrência
   automática (`_capture`).
-- Recusa cobrança quando a moeda da fatura não é BRL, em vez de cobrar o número certo na moeda
-  errada.
+- Recusa cobrança quando a moeda do cliente não é BRL, em vez de cobrar o número certo na moeda
+  errada. A checagem anterior lia `tblinvoices.currency`, coluna que não existe no WHMCS, e nunca
+  disparava; a moeda agora vem de `tblclients.currency`.
+- A verificação de "já existe cobrança em andamento" roda dentro da trava da fatura (antes rodava
+  fora, e duas requisições simultâneas podiam passar pela checagem juntas).
+- Timeout/erro de rede na chamada à Efí deixa a cobrança `unknown` e bloqueia nova tentativa
+  automática até revisão (ver runbook no README); o cliente recebe "Não tente de novo".
+- Antifraude derrubando uma cobrança já `approved`/`paid` (`unpaid`/`canceled`) desfaz o
+  crédito (`AddTransaction` com `amountout`), reabre a fatura e grava alerta crítico — tanto
+  pelo callback quanto pela reconciliação diária.
+- Cobrança de cartão em análise (`new`/`waiting`/`unknown`) é cancelada quando a fatura é
+  cancelada, paga por outro meio ou estornada.
 - `_capture` (recorrência automática) ganha a mesma proteção contra chamada duplicada que o
   checkout síncrono já tinha: nada impedia o WHMCS disparar uma segunda cobrança real no cartão
   do cliente se o cron de cobrança e um clique manual em "Tentar Capturar Pagamento"
@@ -154,13 +189,13 @@ apenas documentado) e coberto por teste automatizado ou lint/análise estática,
   desconhecido.
 - Estorno envia o campo `amount` (não `value`, que a Efí ignorava ou rejeitava) e usa sempre o
   `transid` informado pelo WHMCS para localizar a cobrança (nunca mais "a última cobrança desta
-  fatura no ledger local"); marca `partially_refunded` quando o valor estornado é menor que o
-  total da cobrança.
+  fatura no ledger local"); soma os estornos parciais e marca `partially_refunded` até o total
+  estornado alcançar o valor cobrado; cada estorno ganha transid próprio.
 - CNPJ monta `customer.juridical_person.{corporate_name,cnpj}` (antes ia incorretamente como
   `customer.cnpj` na raiz, que a Efí rejeita/trata como pessoa física).
-- O CPF/CNPJ digitado no checkout é gravado de volta no Campo Personalizado do cliente (quando
-  ainda estiver vazio), para que a recorrência automática — que só lê o cadastro e nunca recebe
-  entrada do navegador — encontre o documento nas cobranças futuras.
+- O CPF/CNPJ digitado no checkout é gravado de volta no Campo Personalizado do cliente quando o
+  campo está vazio ou inválido, para que a recorrência automática — que só lê o cadastro e nunca
+  recebe entrada do navegador — encontre o documento nas cobranças futuras.
 - `Crypto` (cifragem do token de cartão salvo) ganha um formato versionado (`v2`): salt
   aleatório de 16 bytes por token + `hash_pbkdf2` com 100000 iterações, em vez de uma chave sem
   sal e sem custo computacional; tokens no formato anterior (`v1`) continuam sendo lidos
@@ -172,8 +207,11 @@ apenas documentado) e coberto por teste automatizado ou lint/análise estática,
 #### Pix Automático
 
 - Removido o piso local baseado em `valorMinimoRecebedor` que recusava agendar a CobR de uma
-  fatura com valor menor que a autorização inicial — interpretação errada do campo do Bacen, que
-  é um teto configurado pelo PAGADOR, não um mínimo que o recebedor possa exigir por cobrança.
+  fatura com valor menor que a autorização inicial. Pela API do Bacen, o campo é o menor valor
+  que o recebedor aceita que o pagador configure como limite máximo de débito — não um piso por
+  cobrança.
+- CobR cobra o saldo da fatura, não o total.
+- Evento de CobR/Pix inicial fora do ciclo é fechado como `failed` em vez de ficar `pending`.
 - `firstRecurringDate` nunca mais devolve uma data no passado/hoje quando a fatura inicial já
   está vencida há mais de um ciclo (o Bacen exige `dataInicial` futura).
 - `createOrFetchAutomaticCharge`/`createOrFetchInitialCharge` também tratam 400 quando a
@@ -221,9 +259,10 @@ apenas documentado) e coberto por teste automatizado ou lint/análise estática,
 
 Suíte dev-only em `tests/` (nunca enviada para o pacote de release — `tests/vendor/` e
 `.phpunit.result.cache` ficam fora do Git), com `illuminate/database` simulando o `Capsule` do
-WHMCS: testes unitários com SQLite em memória para a maior parte dos casos, e um teste de
-concorrência real contra MySQL (via Docker/`services: mysql` do CI) para a trava por fatura do
-`PaymentApplier`. Roda em todo push/PR (ver seção "Adicionado" acima).
+WHMCS: testes unitários com SQLite em memória para a maior parte dos casos (inclusive a
+reversão de cartão pela antifraude e o fechamento de evento fora do ciclo) e testes de
+integração contra MySQL real (via Docker/`services: mysql` do CI): concorrência na trava por
+fatura do `PaymentApplier` e upgrade de um ledger 1.x com status livres. Roda em todo push/PR.
 
 ## [1.0.0]
 

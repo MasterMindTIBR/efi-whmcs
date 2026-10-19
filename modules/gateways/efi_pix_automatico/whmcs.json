@@ -14,6 +14,9 @@
       "Webhooks autenticados e reconciliação diária"
     ]
   },
+  "logo": {
+    "filename": "logo.png"
+  },
   "support": {
     "homepage": "https://github.com/MasterMindTIBR/efi-whmcs",
     "learn_more": "https://github.com/MasterMindTIBR/efi-whmcs#readme",
