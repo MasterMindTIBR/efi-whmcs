@@ -311,6 +311,16 @@ add_hook('DailyCronJob', 1, function () {
         efi_reconcile_pix_automatico($pendingAutomatic);
     }
 
+    // A autorização (não a CobR por fatura) presa em 'creating': o POST pode já ter sido aceito
+    // pela Efí sem a gravação local do idRec ter completado (processo morto no meio). Nunca
+    // recriar sozinho -- pode já existir uma autorização ativa para aquele contrato/devedor no
+    // Bacen; só sinaliza para revisão manual (ver README).
+    $staleRecurrences = Capsule::table('mod_efi_pix_auto_recurrences')
+        ->where('status', 'creating')->where('updated_at', '<', $creatingSince)->get();
+    foreach ($staleRecurrences as $recurrence) {
+        GatewayLog::error(PixAutomaticService::GATEWAY, [], 'Autorização Pix Automático presa em creating após 10 minutos; revisão manual necessária (pode já existir idRec na Efí sem registro local)', ['recurrence_id' => $recurrence->id, 'client_id' => $recurrence->client_id]);
+    }
+
     $automaticParams = efi_gateway_variables(PixAutomaticService::GATEWAY);
     if ($automaticParams !== null) {
         try {

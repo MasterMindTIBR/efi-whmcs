@@ -155,11 +155,14 @@ final class PixAutomaticService
         if ($recurrence === null || $recurrence->efi_recurrence_id === null || $recurrence->status !== 'APROVADA') {
             return null;
         }
-
         $amountCents = (int) round(((float) $invoice->total) * 100);
-        if ($amountCents < (int) $recurrence->amount_cents) {
-            return 'Pix Automático não agendado: o valor da fatura é menor que o mínimo aceito pela autorização original (valorMinimoRecebedor); solicite uma nova autorização ao cliente.';
-        }
+        // Antes havia uma checagem aqui recusando faturas com valor menor que o da autorização
+        // inicial, por interpretar `valorMinimoRecebedor` como um piso imposto pelo recebedor.
+        // Pelo spec do Bacen, esse campo é o contrário: um teto que o PAGADOR configura no
+        // banco dele para o valor MÁXIMO que aceita ser debitado automaticamente -- não um
+        // mínimo que o recebedor possa exigir por CobR. Removido; se algum valor realmente
+        // violar uma regra do PSP pagador, a CobR volta com status=error e cai no fluxo de
+        // retentativa já existente (ver `retryErroredCharge`).
 
         $existing = Repository::findChargeByInvoice((int) $invoice->id);
         if ($existing !== null && $existing->status !== 'error') {
@@ -223,6 +226,15 @@ final class PixAutomaticService
                 'calendario' => ['dataDeVencimento' => $invoice->duedate],
                 'valor' => ['original' => self::formatAmount($amountCents)],
                 'ajusteDiaUtil' => true,
+                // Bacen marca `recebedor` (agencia/conta/tipoConta) como obrigatório em
+                // `CobRSolicitada`, o corpo de cada CobR individual. [INFERENCE: confirmar em
+                // sandbox antes de reativar para cliente real -- não há como testar sem
+                // credenciais nesta sessão.]
+                'recebedor' => [
+                    'agencia' => trim((string) ($this->gatewayParams['recebedor_agencia'] ?? '')),
+                    'conta' => trim((string) ($this->gatewayParams['recebedor_conta'] ?? '')),
+                    'tipoConta' => (string) ($this->gatewayParams['recebedor_tipo_conta'] ?? 'CORRENTE'),
+                ],
             ]);
         } catch (EfiException $e) {
             GatewayLog::error(self::GATEWAY, $this->gatewayParams, 'Falha ao criar cobrança recorrente (' . $e->code . ')', [
@@ -250,12 +262,31 @@ final class PixAutomaticService
         try {
             return $this->api->pixCreateAutomaticChargeTxid(['txid' => $txid], $body);
         } catch (EfiException $e) {
-            if ((int) $e->code !== 409) {
+            if ((int) $e->code !== 409 && !self::isTxidAlreadyUsedError($e)) {
                 throw $e;
             }
 
             return $this->api->pixDetailAutomaticCharge(['txid' => $txid]);
         }
+    }
+
+    /**
+     * O Bacen também recusa com 400 (não só 409) quando o txid já está em uso para a mesma
+     * CobR. [INFERENCE: o nome/texto exato do erro da Efí para esse caso específico não pôde
+     * ser confirmado nesta sessão sem sandbox -- só trata como "já existe" quando a descrição
+     * menciona txid E algo como "utilizad"/"existe"/"already used", nunca um 400 genérico, que
+     * continua sendo relançado como erro real.]
+     */
+    private static function isTxidAlreadyUsedError(EfiException $e): bool
+    {
+        if ((int) $e->code !== 400) {
+            return false;
+        }
+
+        $description = mb_strtolower((string) $e->errorDescription);
+
+        return str_contains($description, 'txid')
+            && (str_contains($description, 'utilizad') || str_contains($description, 'existe') || str_contains($description, 'already'));
     }
 
     /**
@@ -310,7 +341,7 @@ final class PixAutomaticService
         try {
             return $this->api->pixCreateCharge(['txid' => $txid], $body);
         } catch (EfiException $e) {
-            if ((int) $e->code !== 409) {
+            if ((int) $e->code !== 409 && !self::isTxidAlreadyUsedError($e)) {
                 throw $e;
             }
 
@@ -355,7 +386,12 @@ final class PixAutomaticService
             default => new \DateInterval('P1M'),
         };
 
-        return $date->add($interval)->format('Y-m-d');
+        $result = $date->add($interval)->format('Y-m-d');
+        $tomorrow = (new \DateTimeImmutable('today'))->modify('+1 day')->format('Y-m-d');
+
+        // Uma fatura inicial já vencida há mais de um ciclo (ou um ciclo muito curto) pode
+        // gerar uma `dataInicial` no passado/hoje; o Bacen exige data futura.
+        return $result > $tomorrow ? $result : $tomorrow;
     }
 
     private static function formatAmount(int $amountCents): string

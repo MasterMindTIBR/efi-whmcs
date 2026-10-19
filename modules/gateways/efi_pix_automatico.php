@@ -48,6 +48,28 @@ function efi_pix_automatico_config(): array
             'Size' => '40',
             'Description' => 'Deixe em branco se o certificado não tiver senha.',
         ],
+        'recebedor_agencia' => [
+            'FriendlyName' => 'Agência do recebedor',
+            'Type' => 'text',
+            'Size' => '10',
+            'Description' => 'OBRIGATÓRIO pelo Bacen em toda CobR (campo `recebedor.agencia`). Agência da conta que recebe os pagamentos Pix Automático.',
+        ],
+        'recebedor_conta' => [
+            'FriendlyName' => 'Conta do recebedor',
+            'Type' => 'text',
+            'Size' => '20',
+            'Description' => 'OBRIGATÓRIO pelo Bacen em toda CobR (campo `recebedor.conta`).',
+        ],
+        'recebedor_tipo_conta' => [
+            'FriendlyName' => 'Tipo de conta do recebedor',
+            'Type' => 'dropdown',
+            'Options' => [
+                'CORRENTE' => 'Conta Corrente',
+                'POUPANCA' => 'Conta Poupança',
+                'PAGAMENTO' => 'Conta de Pagamento',
+            ],
+            'Default' => 'CORRENTE',
+        ],
         'skip_mtls_webhook' => [
             'FriendlyName' => 'Pular verificação mTLS no cadastro do webhook',
             'Type' => 'yesno',
@@ -124,6 +146,9 @@ function efi_pix_automatico_config_validate($params): array
     if ((int) ($params['initial_expiration_days'] ?? 0) < 1) {
         $errors[] = 'A validade da autorização inicial deve ser de pelo menos 1 dia.';
     }
+    if (trim((string) ($params['recebedor_agencia'] ?? '')) === '' || trim((string) ($params['recebedor_conta'] ?? '')) === '') {
+        $errors[] = 'Agência e conta do recebedor são obrigatórias (o Bacen exige esse campo em toda CobR).';
+    }
     if ($errors !== []) {
         return ['errors' => $errors];
     }
@@ -153,6 +178,7 @@ function efi_pix_automatico_link($params): string
     }
 
     $clientId = (int) $params['clientdetails']['userid'];
+    $invoiceId = (int) $params['invoiceid'];
     $document = CustomerResolver::documentFromCustomField($clientId, $params['document_field_name'] ?? null);
     $postedDocument = isset($_POST['efi_pix_auto_document'])
         ? CustomerResolver::onlyDigits((string) $_POST['efi_pix_auto_document'])
@@ -163,14 +189,45 @@ function efi_pix_automatico_link($params): string
         return efi_pix_automatico_render_document_form($document !== null);
     }
 
-    $invoice = Capsule::table('tblinvoices')->where('id', (int) $params['invoiceid'])->first(['duedate']);
+    $invoice = Capsule::table('tblinvoices')->where('id', $invoiceId)->first(['duedate']);
     if ($invoice === null) {
         return efi_pix_automatico_render_error('Fatura não encontrada.');
     }
 
+    $recurrence = \EfiWhmcs\PixAutomatic\Repository::findRecurrenceByClient($clientId);
+
+    if ($recurrence !== null && $recurrence->status === 'APROVADA' && (int) $recurrence->initial_invoice_id !== $invoiceId) {
+        // Débito automático já autorizado para este cliente; esta fatura NÃO é a inicial.
+        $charge = \EfiWhmcs\PixAutomatic\Repository::findChargeByInvoice($invoiceId);
+
+        if ($charge !== null && in_array($charge->status, ['CRIADA', 'ATIVA'], true)) {
+            return '<div class="efi-pix-box"><p>O débito automático via Pix Automático já está agendado para esta fatura. Nenhuma ação é necessária.</p></div>';
+        }
+
+        // A CobR desta fatura não existe ou falhou (fora da janela de 2-10 dias, erro, etc.) --
+        // em vez de deixar a fatura sem forma de pagamento, oferece um Pix avulso com a MESMA
+        // chave Pix já configurada neste gateway.
+        try {
+            $pixResult = (new \EfiWhmcs\Pix\PixService($api, $params))->issueOrFetch(
+                $invoiceId,
+                Money::toCents($params['amount']),
+                trim($params['clientdetails']['firstname'] . ' ' . $params['clientdetails']['lastname']),
+                $document
+            );
+        } catch (\Throwable $e) {
+            GatewayLog::error(PixAutomaticService::GATEWAY, $params, 'Erro ao gerar Pix avulso para fatura sem CobR agendada', $e->getMessage());
+            return efi_pix_automatico_render_error('Não foi possível gerar a cobrança Pix para esta fatura: ' . $e->getMessage());
+        }
+
+        return '<div class="efi-pix-box">
+            <p><strong>O débito automático desta fatura específica não pôde ser agendado.</strong> Pague com o QR abaixo para esta fatura; as próximas continuam automáticas.</p>
+            <textarea readonly rows="4" style="width:100%;" onclick="this.select();">' . htmlspecialchars($pixResult['copy_paste'] ?? '') . '</textarea>
+        </div>';
+    }
+
     try {
         $result = (new PixAutomaticService($api, $params))->issueOrFetchInitial(
-            (int) $params['invoiceid'],
+            $invoiceId,
             $clientId,
             Money::toCents($params['amount']),
             trim($params['clientdetails']['firstname'] . ' ' . $params['clientdetails']['lastname']),
