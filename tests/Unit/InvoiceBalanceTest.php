@@ -15,7 +15,7 @@ final class InvoiceBalanceTest extends TestCase
         Capsule::schema()->dropIfExists('tblaccounts');
         Capsule::schema()->dropIfExists('tblinvoices');
         Capsule::schema()->create('tblinvoices', function ($table) { $table->increments('id'); $table->decimal('total', 10, 2); $table->string('status'); });
-        Capsule::schema()->create('tblaccounts', function ($table) { $table->increments('id'); $table->unsignedInteger('invoiceid'); $table->decimal('amountin', 10, 2); $table->string('transid')->nullable(); });
+        Capsule::schema()->create('tblaccounts', function ($table) { $table->increments('id'); $table->unsignedInteger('invoiceid'); $table->decimal('amountin', 10, 2); $table->decimal('amountout', 10, 2)->default(0); $table->string('transid')->nullable(); });
         Capsule::table('tblinvoices')->insert(['id' => 1, 'total' => '100.00', 'status' => 'Unpaid']);
     }
 

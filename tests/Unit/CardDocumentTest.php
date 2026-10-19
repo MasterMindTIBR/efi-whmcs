@@ -15,9 +15,12 @@ final class CardDocumentTest extends TestCase
     protected function setUp(): void
     {
         Schema::resetForTests();
-        foreach (['mod_efi_schema_version', 'mod_efi_events', 'mod_efi_charges'] as $table) {
+        foreach (['mod_efi_schema_version', 'mod_efi_events', 'mod_efi_charges', 'tblaccounts', 'tblinvoices'] as $table) {
             Capsule::schema()->dropIfExists($table);
         }
+        Capsule::schema()->create('tblinvoices', function ($table) { $table->increments('id'); $table->decimal('total', 10, 2); $table->string('status'); });
+        Capsule::schema()->create('tblaccounts', function ($table) { $table->increments('id'); $table->unsignedInteger('invoiceid'); $table->decimal('amountin', 10, 2); $table->decimal('amountout', 10, 2)->default(0); $table->string('transid')->nullable(); });
+        Capsule::table('tblinvoices')->insert(['id' => 1, 'total' => '10.00', 'status' => 'Unpaid']);
         Schema::ensure();
     }
 

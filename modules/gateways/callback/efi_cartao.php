@@ -12,6 +12,7 @@
 require_once __DIR__ . '/../../../init.php';
 require_once __DIR__ . '/../efi/vendor/autoload.php';
 
+use EfiWhmcs\Card\CardService;
 use EfiWhmcs\Ledger\ChargeRepository;
 use EfiWhmcs\Support\EfiClientFactory;
 use EfiWhmcs\Support\GatewayLoader;
@@ -59,19 +60,31 @@ foreach ($transitions as $transition) {
         'to' => $to,
     ], 'Notificação de cartão: ' . $to);
 
-    if ($to !== 'paid') {
-        ChargeRepository::updateStatus($charge->id, $to);
-        \EfiWhmcs\Ledger\EventRepository::markApplied((int) $transition['eventId']);
-    }
-
-    if ($to === 'paid') {
+    // Política do módulo: `approved` (aprovado pela operadora) já dá a fatura como paga -- mesmo
+    // comportamento do checkout síncrono e do `_capture` --, e uma reversão posterior da
+    // antifraude (`approved` → `unpaid`/`canceled`) desfaz o crédito e reabre a fatura.
+    if (in_array($to, ['approved', 'paid'], true)) {
         PaymentApplier::apply([
             'invoiceId' => $invoiceId, 'transId' => (string) $charge->efi_charge_id,
             'amountCents' => $transition['valueCents'] ?? (int) $charge->amount_cents,
             'module' => $gatewayModuleName, 'gatewayParams' => $gatewayParams,
             'chargeId' => (int) $charge->id, 'eventId' => (int) $transition['eventId'],
+            'settledStatus' => $to,
+        ]);
+        continue;
+    }
+
+    ChargeRepository::updateStatus($charge->id, $to);
+
+    if (in_array($to, ['unpaid', 'canceled'], true)) {
+        (new CardService($api, $gatewayParams))->revertAppliedPayment($charge, $to);
+    } elseif (in_array($to, ['refunded', 'contested', 'charged_back'], true)) {
+        GatewayLog::error($gatewayModuleName, $gatewayParams, 'Cobrança de cartão ' . $to . ' na Efí -- se não foi iniciado pelo próprio WHMCS (estorno pela tela da fatura), revise manualmente: contestação/estorno externo não é lançado automaticamente', [
+            'invoice_id' => $invoiceId, 'charge_id' => $charge->efi_charge_id, 'from' => $transition['from'],
         ]);
     }
+
+    \EfiWhmcs\Ledger\EventRepository::markApplied((int) $transition['eventId']);
 }
 
 http_response_code(200);

@@ -31,7 +31,7 @@ final class PixAutomaticPayloadTest extends TestCase
         Schema::resetForTests();
         foreach ([
             'mod_efi_schema_version', 'mod_efi_pix_auto_recurrences', 'mod_efi_pix_auto_charges',
-            'mod_efi_pix_auto_events', 'mod_efi_charges', 'mod_efi_events', 'tblinvoices',
+            'mod_efi_pix_auto_events', 'mod_efi_charges', 'mod_efi_events', 'tblinvoices', 'tblaccounts',
         ] as $table) {
             Capsule::schema()->dropIfExists($table);
         }
@@ -40,6 +40,12 @@ final class PixAutomaticPayloadTest extends TestCase
             $table->decimal('total', 10, 2);
             $table->string('status');
         });
+        Capsule::schema()->create('tblaccounts', function ($table) { $table->increments('id'); $table->unsignedInteger('invoiceid'); $table->decimal('amountin', 10, 2); $table->decimal('amountout', 10, 2)->default(0); $table->string('transid')->nullable(); });
+        Capsule::table('tblinvoices')->insert([
+            ['id' => 10, 'total' => '20.00', 'status' => 'Unpaid'],
+            ['id' => 11, 'total' => '5.00', 'status' => 'Unpaid'],
+            ['id' => 12, 'total' => '30.00', 'status' => 'Unpaid'],
+        ]);
         \EfiWhmcs\Ledger\Schema::ensure();
         Schema::ensure();
     }
@@ -96,6 +102,29 @@ final class PixAutomaticPayloadTest extends TestCase
         self::assertNotNull($message);
         self::assertStringNotContainsString('valorMinimoRecebedor', (string) $message);
         self::assertSame('Cobrança Pix Automático agendada na Efí.', $message);
+    }
+
+    public function testCobrChargesTheOutstandingBalanceNotTheInvoiceTotal(): void
+    {
+        $recurrence = $this->approvedRecurrence(amountCents: 3000);
+        Capsule::table('tblaccounts')->insert(['invoiceid' => 12, 'amountin' => '10.00', 'transid' => 'credito']);
+
+        $captured = null;
+        $api = $this->createMock(EfiPay::class);
+        $api->method('__call')->willReturnCallback(function (string $method, array $args) use (&$captured): array {
+            if ($method === 'pixCreateAutomaticChargeTxid') {
+                $captured = $args[1] ?? null;
+
+                return ['status' => 'CRIADA'];
+            }
+
+            return [];
+        });
+
+        $invoice = (object) ['id' => 12, 'userid' => (int) $recurrence->client_id, 'total' => '30.00', 'duedate' => date('Y-m-d', strtotime('+5 days'))];
+        (new PixAutomaticService($api, $this->gatewayParams))->scheduleInvoice($invoice);
+
+        self::assertSame('20.00', $captured['valor']['original'] ?? null);
     }
 
     public function testFirstRecurringDateNeverReturnsAPastOrTodayDate(): void

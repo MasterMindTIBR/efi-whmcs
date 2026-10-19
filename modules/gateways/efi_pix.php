@@ -139,6 +139,10 @@ function efi_pix_config_validate($params)
 
 function efi_pix_link($params)
 {
+    if (!\EfiWhmcs\Support\InvoiceBalance::isBrl((int) $params['invoiceid'])) {
+        return efi_pix_render_error('Este gateway só emite cobranças em Real (BRL). Escolha outra forma de pagamento.');
+    }
+
     try {
         $api = EfiClientFactory::make($params, true);
     } catch (\Throwable $e) {
@@ -221,14 +225,18 @@ function efi_pix_render_error(string $message): string
 
 function efi_pix_refund($params)
 {
-    $charge = \EfiWhmcs\Ledger\ChargeRepository::findByInvoiceAndRail((int) $params['invoiceid'], PixService::RAIL);
+    // O WHMCS passa o transid do pagamento, que neste módulo é o e2eId. findByInvoiceAndRail
+    // não serve aqui: ela só enxerga cobranças ATIVAS, e toda cobrança paga está CONCLUIDA.
+    $transId = trim((string) ($params['transid'] ?? ''));
+    $charge = $transId !== '' ? \EfiWhmcs\Ledger\ChargeRepository::findByPixEndToEndId($transId) : null;
+    $charge ??= \EfiWhmcs\Ledger\ChargeRepository::latestForInvoice((int) $params['invoiceid'], PixService::RAIL);
 
     if ($charge === null) {
         return ['status' => 'error', 'rawdata' => 'Cobrança Pix não encontrada no ledger local.'];
     }
 
     $metadata = json_decode((string) $charge->metadata, true) ?: [];
-    $e2eId = $metadata['e2e_id'] ?? null;
+    $e2eId = $transId !== '' ? $transId : ($metadata['e2e_id'] ?? null);
 
     if ($e2eId === null) {
         return ['status' => 'error', 'rawdata' => 'e2eId não registrado para esta cobrança (pagamento pode não ter sido confirmado via webhook ainda).'];
@@ -253,7 +261,7 @@ function efi_pix_refund($params)
 
         return [
             'status' => 'success',
-            'transid' => $response['id'] ?? $e2eId,
+            'transid' => (string) ($response['rtrId'] ?? $response['id'] ?? $devolutionId),
             'rawdata' => $response,
         ];
     } catch (\Throwable $e) {

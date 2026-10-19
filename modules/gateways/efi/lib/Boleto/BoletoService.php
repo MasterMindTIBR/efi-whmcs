@@ -91,6 +91,11 @@ final class BoletoService
                     'invoice' => $invoiceId,
                 ]);
 
+                // Recusa limpa da Efí (validação): nada foi emitido, então a reserva não pode
+                // ficar 'creating' -- o cron a viraria failed-unknown e travaria o boleto desta
+                // fatura para sempre. 'error' libera uma nova tentativa já corrigida.
+                ChargeRepository::updateStatus($localId, 'error');
+
                 throw new \RuntimeException('Não foi possível emitir o boleto: ' . $e->errorDescription);
             }
 
@@ -161,7 +166,13 @@ final class BoletoService
             return "Boleto {$charge->efi_charge_id} está com status '{$charge->status}'; vencimento não realinhado (a Efí só permite alterar cobranças não pagas).";
         }
 
-        if ($currentTotalAmountCents !== (int) $charge->amount_cents) {
+        // `amount_cents` é o valor com o desconto condicional já abatido; a comparação precisa
+        // ser contra o valor-base emitido, senão todo boleto com desconto seria cancelado a
+        // cada edição da fatura.
+        $metadata = json_decode((string) $charge->metadata, true) ?: [];
+        $issuedBaseCents = (int) ($metadata['base_amount_cents'] ?? $charge->amount_cents);
+
+        if ($currentTotalAmountCents !== $issuedBaseCents) {
             try {
                 $this->api->cancelCharge(['id' => $charge->efi_charge_id]);
             } catch (EfiException $e) {
@@ -177,7 +188,7 @@ final class BoletoService
 
             ChargeRepository::updateStatus($charge->id, 'canceled');
 
-            return "Boleto {$charge->efi_charge_id} cancelado porque o valor da fatura mudou de R$ " . number_format($charge->amount_cents / 100, 2, ',', '.') . " para R$ " . number_format($currentTotalAmountCents / 100, 2, ',', '.') . " (a Efí não altera o valor de um boleto já emitido); um boleto novo com o valor correto será emitido na próxima vez que a fatura for aberta.";
+            return "Boleto {$charge->efi_charge_id} cancelado porque o valor da fatura mudou de R$ " . number_format($issuedBaseCents / 100, 2, ',', '.') . " para R$ " . number_format($currentTotalAmountCents / 100, 2, ',', '.') . " (a Efí não altera o valor de um boleto já emitido); um boleto novo com o valor correto será emitido na próxima vez que a fatura for aberta.";
         }
 
         $offsetDays = (int) ($charge->due_offset_days ?? 0);

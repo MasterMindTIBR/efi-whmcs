@@ -118,6 +118,11 @@ final class Repository
         Capsule::table('mod_efi_pix_auto_events')->where('id', $id)->update(['status' => 'applied']);
     }
 
+    public static function markEventFailed(int $id): void
+    {
+        Capsule::table('mod_efi_pix_auto_events')->where('id', $id)->update(['status' => 'failed']);
+    }
+
     /** @return \Illuminate\Support\Collection<int, object> */
     public static function pendingChargeEventsOlderThan(int $minutes): \Illuminate\Support\Collection
     {

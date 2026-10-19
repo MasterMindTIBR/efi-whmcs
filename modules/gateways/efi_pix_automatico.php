@@ -82,6 +82,13 @@ function efi_pix_automatico_config(): array
             'Default' => '34.193.116.226',
             'Description' => 'Só é checado quando "Pular verificação mTLS" acima está ativo. Lista separada por vírgula dos IPs de origem aceitos para o webhook; o valor padrão é o IP documentado hoje pela Efí (pode mudar -- ver a doc oficial de Webhooks Pix se as notificações pararem de chegar).',
         ],
+        'efi_webhook_trusted_proxies' => [
+            'FriendlyName' => 'Proxies confiáveis do webhook',
+            'Type' => 'text',
+            'Size' => '60',
+            'Default' => '',
+            'Description' => 'Lista separada por vírgula de proxies reversos/CDN confiáveis na frente deste servidor. Somente quando REMOTE_ADDR estiver nesta lista o primeiro X-Forwarded-For será usado como IP de origem; vazio mantém REMOTE_ADDR diretamente.',
+        ],
         'periodicity' => [
             'FriendlyName' => 'Periodicidade autorizada',
             'Type' => 'dropdown',
@@ -171,6 +178,10 @@ function efi_pix_automatico_config_validate($params): array
 
 function efi_pix_automatico_link($params): string
 {
+    if (!\EfiWhmcs\Support\InvoiceBalance::isBrl((int) $params['invoiceid'])) {
+        return efi_pix_automatico_render_error('Este gateway só emite cobranças em Real (BRL). Escolha outra forma de pagamento.');
+    }
+
     try {
         $api = EfiClientFactory::make($params, true);
     } catch (\Throwable $e) {
@@ -208,7 +219,7 @@ function efi_pix_automatico_link($params): string
         // em vez de deixar a fatura sem forma de pagamento, oferece um Pix avulso com a MESMA
         // chave Pix já configurada neste gateway.
         try {
-            $pixResult = (new \EfiWhmcs\Pix\PixService($api, $params))->issueOrFetch(
+            $pixResult = (new \EfiWhmcs\Pix\PixService($api, $params, PixAutomaticService::GATEWAY))->issueOrFetch(
                 $invoiceId,
                 Money::toCents($params['amount']),
                 trim($params['clientdetails']['firstname'] . ' ' . $params['clientdetails']['lastname']),

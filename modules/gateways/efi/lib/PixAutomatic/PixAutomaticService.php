@@ -101,10 +101,11 @@ final class PixAutomaticService
                     'dataInicial' => $this->firstRecurringDate($invoiceDueDate),
                     'periodicidade' => $this->periodicity(),
                 ],
-                // `valorMinimoRecebedor` (em vez de `valorRec` fixo) permite que cada CobR tenha
-                // um valor diferente, desde que não menor que este -- necessário porque a fatura
-                // WHMCS muda de valor (multa, desconto, crédito aplicado, item adicional) sem
-                // que isso deva travar a cobrança recorrente (ver scheduleInvoice()).
+                // `valorMinimoRecebedor` (em vez de `valorRec` fixo) deixa cada CobR com valor
+                // livre -- a fatura WHMCS muda de valor (multa, desconto, crédito, item novo).
+                // Pela API do Bacen, o campo é o menor valor que o RECEBEDOR aceita que o pagador
+                // configure como seu limite máximo de débito; não é piso por CobR. Uma CobR acima
+                // do limite que o pagador escolheu é recusada pelo PSP dele.
                 'valor' => ['valorMinimoRecebedor' => self::formatAmount($amountCents)],
                 'politicaRetentativa' => (string) ($this->gatewayParams['retry_policy'] ?? 'NAO_PERMITE'),
                 'loc' => (int) $locId,
@@ -155,14 +156,14 @@ final class PixAutomaticService
         if ($recurrence === null || $recurrence->efi_recurrence_id === null || $recurrence->status !== 'APROVADA') {
             return null;
         }
-        $amountCents = (int) round(((float) $invoice->total) * 100);
-        // Antes havia uma checagem aqui recusando faturas com valor menor que o da autorização
-        // inicial, por interpretar `valorMinimoRecebedor` como um piso imposto pelo recebedor.
-        // Pelo spec do Bacen, esse campo é o contrário: um teto que o PAGADOR configura no
-        // banco dele para o valor MÁXIMO que aceita ser debitado automaticamente -- não um
-        // mínimo que o recebedor possa exigir por CobR. Removido; se algum valor realmente
-        // violar uma regra do PSP pagador, a CobR volta com status=error e cai no fluxo de
-        // retentativa já existente (ver `retryErroredCharge`).
+        // Saldo, não total: crédito/pagamento parcial já lançado não é debitado de novo.
+        $amountCents = \EfiWhmcs\Support\InvoiceBalance::centsDue((int) $invoice->id);
+        if ($amountCents <= 0) {
+            return null;
+        }
+        // Sem piso local por CobR: `valorMinimoRecebedor` limita o teto que o pagador pode
+        // configurar, não o valor de cada cobrança. Se o valor exceder o limite do pagador, o
+        // PSP dele recusa a CobR; a fatura continua com o Pix avulso de fallback no checkout.
 
         $existing = Repository::findChargeByInvoice((int) $invoice->id);
         if ($existing !== null && $existing->status !== 'error') {
@@ -227,9 +228,8 @@ final class PixAutomaticService
                 'valor' => ['original' => self::formatAmount($amountCents)],
                 'ajusteDiaUtil' => true,
                 // Bacen marca `recebedor` (agencia/conta/tipoConta) como obrigatório em
-                // `CobRSolicitada`, o corpo de cada CobR individual. [INFERENCE: confirmar em
-                // sandbox antes de reativar para cliente real -- não há como testar sem
-                // credenciais nesta sessão.]
+                // `CobRSolicitada`, o corpo de cada CobR individual. Formato ainda não validado
+                // em sandbox Efí (ver README, "Pendências de validação").
                 'recebedor' => [
                     'agencia' => trim((string) ($this->gatewayParams['recebedor_agencia'] ?? '')),
                     'conta' => trim((string) ($this->gatewayParams['recebedor_conta'] ?? '')),
@@ -272,10 +272,9 @@ final class PixAutomaticService
 
     /**
      * O Bacen também recusa com 400 (não só 409) quando o txid já está em uso para a mesma
-     * CobR. [INFERENCE: o nome/texto exato do erro da Efí para esse caso específico não pôde
-     * ser confirmado nesta sessão sem sandbox -- só trata como "já existe" quando a descrição
-     * menciona txid E algo como "utilizad"/"existe"/"already used", nunca um 400 genérico, que
-     * continua sendo relançado como erro real.]
+     * CobR. O texto exato do erro da Efí para esse caso não foi confirmado em sandbox: só trata
+     * como "já existe" quando a descrição menciona txid E algo como "utilizad"/"existe"/
+     * "already used"; um 400 genérico continua sendo relançado como erro real.
      */
     private static function isTxidAlreadyUsedError(EfiException $e): bool
     {

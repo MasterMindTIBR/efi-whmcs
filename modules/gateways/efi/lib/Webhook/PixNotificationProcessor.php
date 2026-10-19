@@ -21,8 +21,22 @@ use EfiWhmcs\Support\GatewayLog;
  */
 final class PixNotificationProcessor
 {
-    public function __construct(private readonly EfiPay $api, private readonly array $gatewayParams)
+    /**
+     * @param string|null $ownerModule quando informado, só processa cobranças emitidas por esse
+     *                                 gateway (`PixService::moduleOf`): o mesmo webhook Pix
+     *                                 serve o Pix imediato e o Pix avulso de fallback do Pix
+     *                                 Automático, cada um com suas próprias credenciais.
+     */
+    public function __construct(
+        private readonly EfiPay $api,
+        private readonly array $gatewayParams,
+        private readonly ?string $ownerModule = null
+    ) {
+    }
+
+    private function logModule(): string
     {
+        return $this->ownerModule ?? 'efi_pix';
     }
 
     /**
@@ -54,8 +68,17 @@ final class PixNotificationProcessor
             $charge = ChargeRepository::findByEfiChargeId($txid);
 
             if ($charge === null) {
-                GatewayLog::error('efi_pix', $this->gatewayParams, 'txid sem correspondência no ledger local', $entry);
+                // O Pix inicial do Pix Automático não fica neste ledger (é tratado à parte) e,
+                // com duas passadas (uma por gateway), só uma delas reporta o "sem correspondência".
+                $isAutomaticInitial = \EfiWhmcs\PixAutomatic\Repository::findRecurrenceByInitialTxid($txid) !== null;
+                if (!$isAutomaticInitial && ($this->ownerModule === null || $this->ownerModule === 'efi_pix')) {
+                    GatewayLog::error($this->logModule(), $this->gatewayParams, 'txid sem correspondência no ledger local', $entry);
+                }
                 continue;
+            }
+
+            if ($this->ownerModule !== null && \EfiWhmcs\Pix\PixService::moduleOf($charge) !== $this->ownerModule) {
+                continue; // cobrança do outro gateway -- a outra passada a processa.
             }
 
             $claimed = EventRepository::tryClaim($charge->id, $e2eId, $charge->status, 'CONCLUIDA', $txid);

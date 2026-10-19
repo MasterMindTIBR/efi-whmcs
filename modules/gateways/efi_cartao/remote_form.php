@@ -307,8 +307,8 @@ $systemUrl = rtrim((string) \WHMCS\Config\Setting::getValue('SystemURL'), '/');
 
             Swal.fire({
                 icon: 'success',
-                title: <?= json_encode($isCharge ? 'Pagamento recebido!' : 'Cartão salvo com sucesso!') ?>,
-                text: <?= json_encode($isCharge ? 'Redirecionando para a fatura...' : 'Redirecionando...') ?>,
+                title: data.pending ? 'Pagamento em análise' : <?= json_encode($isCharge ? 'Pagamento recebido!' : 'Cartão salvo com sucesso!') ?>,
+                text: data.pending ? 'A operadora está analisando o pagamento; a fatura é atualizada automaticamente assim que for aprovado.' : <?= json_encode($isCharge ? 'Redirecionando para a fatura...' : 'Redirecionando...') ?>,
                 timer: 3000,
                 timerProgressBar: true,
                 showConfirmButton: false,

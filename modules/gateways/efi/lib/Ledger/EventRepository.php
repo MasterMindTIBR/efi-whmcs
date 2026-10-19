@@ -59,6 +59,23 @@ final class EventRepository
         Capsule::table('mod_efi_events')->where('id', $eventRowId)->update(['status' => 'applied']);
     }
 
+    /** Terminal sem efeito (ex.: pagamento recebido com a fatura já fora do ciclo) -- revisão manual. */
+    public static function markFailed(int $eventRowId): void
+    {
+        Capsule::table('mod_efi_events')->where('id', $eventRowId)->update(['status' => 'failed']);
+    }
+
+    /**
+     * Fecha os eventos pendentes de uma cobrança depois que o estado real dela foi resolvido por
+     * outro caminho (ex.: o cron reconciliou com uma chave própria `reconcile:*`). Sem isso o
+     * evento original da notificação ficava `pending` para sempre e era reprocessado todo dia.
+     */
+    public static function closePendingForCharge(int $chargeId, string $status): void
+    {
+        Capsule::table('mod_efi_events')->where('charge_id', $chargeId)->where('status', 'pending')
+            ->update(['status' => $status]);
+    }
+
     /** Counts durable Pix-devolution events used to allocate a distinct refund attempt id. */
     public static function countByEventKeyPrefix(int $chargeId, string $prefix): int
     {

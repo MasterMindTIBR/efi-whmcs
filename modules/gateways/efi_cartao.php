@@ -244,13 +244,17 @@ function efi_cartao_capture($params)
         return ['status' => 'error', 'rawdata' => 'Telefone brasileiro válido do cliente não encontrado; recorrência automática não pode prosseguir sem telefone.'];
     }
 
-    $existingCharge = ChargeRepository::findByInvoiceAndRail((int) $params['invoiceid'], CardService::RAIL);
+    $invoiceId = (int) $params['invoiceid'];
 
-    // Mesma proteção contra reenvio que o checkout síncrono já tem (remote_process.php): o
-    // próprio WHMCS pode disparar `_capture` mais de uma vez para a mesma fatura (cron de
-    // cobrança automática + clique manual em "Tentar Capturar Pagamento" concorrentes), e
-    // nada aqui impedia uma segunda cobrança real no cartão do cliente.
-    if ($existingCharge !== null && in_array($existingCharge->status, ['creating', 'waiting', 'approved', 'paid', 'unknown', 'failed-unknown'], true)) {
+    if (!\EfiWhmcs\Support\InvoiceBalance::isBrl($invoiceId)) {
+        return ['status' => 'error', 'rawdata' => 'Fatura em moeda diferente de BRL; a Efí só cobra em Real e este módulo não converte moeda.'];
+    }
+
+    // Atalho para o caso comum: a garantia real contra duas cobranças (cron de cobrança
+    // automática + clique manual em "Tentar Capturar Pagamento" concorrentes) é a
+    // revalidação sob a trava da fatura em CardService::chargeWithToken (status 'blocked').
+    $existingCharge = ChargeRepository::findByInvoiceAndRail($invoiceId, CardService::RAIL);
+    if ($existingCharge !== null && in_array($existingCharge->status, CardService::BLOCKING_STATUSES, true)) {
         return ['status' => 'error', 'rawdata' => 'Já existe uma cobrança de cartão em andamento ou concluída para esta fatura.'];
     }
 
@@ -295,8 +299,8 @@ function efi_cartao_refund($params)
     $result = (new CardService($api, $params))->refund($charge->efi_charge_id, $amountCents);
 
     if ($result['status'] === 'success') {
-        $isFullRefund = $amountCents >= (int) $charge->amount_cents;
-        ChargeRepository::updateStatus($charge->id, $isFullRefund ? 'refunded' : 'partially_refunded');
+        // Soma estornos anteriores (atômico): dois parciais que completam o valor viram `refunded`.
+        ChargeRepository::addRefundedCents((int) $charge->id, $amountCents);
     }
 
     return [
@@ -327,6 +331,12 @@ function efi_cartao_map_result(array $result, string $gatewayId): array
             'rawdata' => $result['raw'],
         ],
         'error' => [
+            'status' => 'error',
+            'rawdata' => $result['raw'],
+        ],
+        'blocked', 'unknown' => [
+            // Nem recusa da operadora nem sucesso: 'blocked' = outra cobrança já em andamento;
+            // 'unknown' = timeout/erro de rede com resultado incerto (revisão manual).
             'status' => 'error',
             'rawdata' => $result['raw'],
         ],

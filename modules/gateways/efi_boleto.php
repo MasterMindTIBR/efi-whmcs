@@ -128,6 +128,10 @@ function efi_boleto_config_validate($params)
  */
 function efi_boleto_link($params)
 {
+    if (!\EfiWhmcs\Support\InvoiceBalance::isBrl((int) $params['invoiceid'])) {
+        return efi_boleto_render_error('Este gateway só emite cobranças em Real (BRL). Escolha outra forma de pagamento.');
+    }
+
     try {
         $api = EfiClientFactory::make($params);
     } catch (\Throwable $e) {

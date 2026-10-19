@@ -20,6 +20,16 @@ final class Schema
         }
 
         \EfiWhmcs\Ledger\Schema::ensure();
+
+        try {
+            if ((int) Capsule::table('mod_efi_schema_version')->where('module', self::MODULE)->max('version') >= 1) {
+                self::$ensured = true;
+                return;
+            }
+        } catch (\Throwable) {
+            // tabela de versão indisponível: segue para a criação completa abaixo.
+        }
+
         self::createTables();
         self::migrate(1, [self::class, 'migrateEventLifecycle']);
         self::$ensured = true;

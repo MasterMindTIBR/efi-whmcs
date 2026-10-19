@@ -89,6 +89,8 @@ try {
     $api = EfiClientFactory::make($gatewayParams);
     $service = new CardService($api, $gatewayParams);
 
+    $pendingReview = false;
+
     if ($invoiceId > 0) {
         $invoice = Capsule::table('tblinvoices')->where('id', $invoiceId)->where('userid', $clientId)->first();
 
@@ -100,20 +102,18 @@ try {
             efi_cartao_process_fail('Esta fatura não está mais em aberto.', 409);
         }
 
-        $currencyCode = Capsule::table('tblcurrencies')->where('id', $invoice->currency)->value('code');
-        if ($currencyCode !== null && strtoupper((string) $currencyCode) !== 'BRL') {
-            // A API da Efí cobra sempre em BRL; este módulo nunca converteu moeda. Falhar
+        if (!InvoiceBalance::isBrl($invoiceId)) {
+            // A API da Efí cobra sempre em BRL; este módulo nunca converte moeda. Falhar
             // explicitamente é mais seguro que cobrar o valor numérico errado em outra moeda.
             efi_cartao_process_fail('Este gateway só processa cobranças em Real (BRL).', 422);
         }
 
-        // Protege contra reenvio (duplo clique, retry de rede, back+resubmit) olhando o ledger
-        // ANTES de chamar a Efí; a trava de verdade contra a corrida (duas abas simultâneas)
-        // é o GET_LOCK por fatura dentro de CardService::chargeWithToken -- esta checagem aqui
-        // só evita uma chamada à API desnecessária no caso comum (não concorrente).
+        // Atalho para o caso comum (não concorrente): evita chamar a Efí à toa. A garantia real
+        // contra duas cobranças é a revalidação sob a trava da fatura dentro de
+        // CardService::chargeWithToken (status 'blocked').
         $existingCharge = ChargeRepository::findByInvoiceAndRail($invoiceId, CardService::RAIL);
 
-        if ($existingCharge !== null && in_array($existingCharge->status, ['creating', 'waiting', 'approved', 'paid', 'unknown', 'failed-unknown'], true)) {
+        if ($existingCharge !== null && in_array($existingCharge->status, CardService::BLOCKING_STATUSES, true)) {
             efi_cartao_process_fail('Já existe uma cobrança de cartão em andamento ou concluída para esta fatura.', 409);
         }
 
@@ -147,6 +147,12 @@ try {
             'status' => $result['status'],
         ], 'Cobrança de cartão: ' . $result['status']);
 
+        if ($result['status'] === 'blocked') {
+            efi_cartao_process_fail((string) ($result['raw']['description'] ?? 'Já existe uma cobrança de cartão em andamento para esta fatura.'), 409);
+        }
+        if ($result['status'] === 'unknown') {
+            efi_cartao_process_fail('Não foi possível confirmar o pagamento com a operadora. Não tente de novo: a cobrança pode já ter sido processada -- fale com o suporte.', 502);
+        }
         if ($result['status'] === 'error') {
             efi_cartao_process_fail('Não foi possível processar o cartão. Tente novamente mais tarde.', 502);
         }
@@ -162,14 +168,20 @@ try {
                 'module' => 'efi_cartao',
                 'gatewayParams' => $gatewayParams,
                 'chargeId' => (int) $result['local_id'],
+                'settledStatus' => $result['status'],
             ]);
         }
-        // status 'waiting' (ex.: análise/3DS assíncrono): pagamento será aplicado pelo
-        // callback/efi_cartao.php quando a notificação de confirmação chegar.
+        // status 'waiting' (análise assíncrona): o pagamento é aplicado pelo
+        // callback/efi_cartao.php quando a notificação de aprovação chegar.
+        $pendingReview = $result['status'] === 'waiting';
 
-        // Grava o documento digitado no Campo Personalizado para que a recorrência automática
-        // (_capture, que só lê o campo e nunca recebe entrada do cliente) o encontre depois.
-        CustomerResolver::saveDocumentToCustomField($clientId, $gatewayParams['document_field_name'] ?? null, $documentDigits);
+        // Grava o documento digitado no Campo Personalizado (só se o cadastro ainda não tiver um
+        // documento válido) para que a recorrência automática (_capture, que só lê o cadastro)
+        // o encontre depois -- nunca sobrescreve um documento válido já cadastrado.
+        $currentDocument = CustomerResolver::documentFromCustomField($clientId, $gatewayParams['document_field_name'] ?? null);
+        if ($currentDocument === null || !CustomerResolver::isValidCpfOrCnpj($currentDocument)) {
+            CustomerResolver::saveDocumentToCustomField($clientId, $gatewayParams['document_field_name'] ?? null, $documentDigits);
+        }
     }
 
     if ($saveCard) {
@@ -190,7 +202,7 @@ try {
         );
     }
 
-    echo json_encode(['success' => true]);
+    echo json_encode(['success' => true, 'pending' => $pendingReview]);
 } catch (\Throwable $e) {
     GatewayLog::error('efi_cartao', $gatewayParams, 'Falha ao processar cartão (remote_process)', $e->getMessage());
     efi_cartao_process_fail('Não foi possível processar o pagamento. Tente novamente em instantes ou contate o suporte.', 500);

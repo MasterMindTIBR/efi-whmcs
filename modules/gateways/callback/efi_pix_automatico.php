@@ -41,7 +41,9 @@ if ($expectedSecret === '' || !hash_equals($expectedSecret, $providedSecret)) {
 
 $remoteAddr = (string) ($_SERVER['REMOTE_ADDR'] ?? '');
 
-if (!WebhookIpAllowlist::allows($remoteAddr, $gatewayParams)) {
+// Mesma composição do callback Pix: o campo de proxy confiável pode estar em qualquer um dos
+// dois gateways (os dois webhooks chegam pelo mesmo servidor/proxy).
+if (!WebhookIpAllowlist::allows($remoteAddr, $gatewayParams, GatewayLoader::variables('efi_pix') ?? [])) {
     GatewayLog::error($gatewayModuleName, $gatewayParams, 'Webhook Pix Automático rejeitado: IP de origem fora da lista permitida (mTLS pulado)', ['ip' => $remoteAddr]);
     http_response_code(WebhookIpAllowlist::responseStatus(false));
     echo '403';
@@ -93,11 +95,15 @@ foreach ($charges as $transition) {
     $charge = $transition['charge'];
     $e2eId = $transition['e2eId'];
     $invoiceId = (int) $charge->invoice_id;
+    $markSettled = static function () use ($charge, $e2eId): void {
+        Repository::updateCharge((int) $charge->id, ['status' => 'CONCLUIDA', 'metadata' => json_encode(['e2e_id' => $e2eId]) ?: '{}']);
+    };
     PaymentApplier::apply([
         'invoiceId' => $invoiceId, 'transId' => $e2eId, 'amountCents' => (int) $transition['amountCents'],
         'module' => $gatewayModuleName, 'gatewayParams' => $gatewayParams,
-        'markPaid' => static function () use ($charge, $e2eId): void { Repository::updateCharge((int) $charge->id, ['status' => 'CONCLUIDA', 'metadata' => json_encode(['e2e_id' => $e2eId]) ?: '{}']); },
+        'markSettled' => $markSettled,
         'markApplied' => static function () use ($transition): void { Repository::markEventApplied((int) $transition['eventId']); },
+        'markFailed' => static function () use ($transition): void { Repository::markEventFailed((int) $transition['eventId']); },
     ]);
     logTransaction($gatewayModuleName, ['invoice_id' => $invoiceId, 'txid' => $charge->efi_charge_id, 'e2eId' => $e2eId], 'Cobrança Pix Automático concluída');
 }

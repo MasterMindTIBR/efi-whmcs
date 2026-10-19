@@ -56,15 +56,28 @@ if (!WebhookIpAllowlist::allows($remoteAddr, $pixParams, $automaticParams)) {
 
 $rawBody = file_get_contents('php://input') ?: '';
 
+// Pix imediato: uma passada por gateway configurado. O Pix avulso de fallback do Pix
+// Automático fica no mesmo ledger (rail 'pix') mas é emitido com as credenciais do Pix
+// Automático -- antes só a passada do efi_pix existia, e com ele inativo esse pagamento nunca
+// era creditado.
+$immediatePixPasses = [];
 if (!empty($pixParams['type'])) {
+    $immediatePixPasses[] = ['efi_pix', $pixParams];
+}
+if (!empty($automaticParams['type'])) {
+    $immediatePixPasses[] = [PixAutomaticService::GATEWAY, $automaticParams];
+}
+
+foreach ($immediatePixPasses as [$ownerModule, $ownerParams]) {
     try {
-        $api = EfiClientFactory::make($pixParams, true);
-        $transitions = (new PixNotificationProcessor($api, $pixParams))->fetchNewTransitions($rawBody);
+        $api = EfiClientFactory::make($ownerParams, true);
+        $transitions = (new PixNotificationProcessor($api, $ownerParams, $ownerModule))->fetchNewTransitions($rawBody);
+        $pixService = new PixService($api, $ownerParams, $ownerModule);
 
         foreach ($transitions as $transition) {
             $charge = $transition['charge'];
             $invoiceId = (int) $charge->invoice_id;
-            logTransaction('efi_pix', [
+            logTransaction($ownerModule, [
                 'invoice_id' => $invoiceId,
                 'txid' => $charge->efi_charge_id,
                 'e2eId' => $transition['e2eId'],
@@ -74,22 +87,23 @@ if (!empty($pixParams['type'])) {
             $metadata = json_decode((string) $charge->metadata, true) ?: [];
             $metadata['e2e_id'] = $transition['e2eId'];
             ChargeRepository::updateMetadata((int) $charge->id, json_encode($metadata) ?: '{}');
-
-            $pixService = new PixService($api, $pixParams);
+            $charge->metadata = json_encode($metadata) ?: '{}';
 
             PaymentApplier::apply([
                 'invoiceId' => $invoiceId, 'transId' => $transition['e2eId'],
-                'amountCents' => (int) $transition['valueCents'], 'module' => 'efi_pix',
-                'gatewayParams' => $pixParams, 'chargeId' => (int) $charge->id,
-                'eventId' => (int) $transition['eventId'],
+                'amountCents' => (int) $transition['valueCents'], 'module' => $ownerModule,
+                'gatewayParams' => $ownerParams, 'chargeId' => (int) $charge->id,
+                'eventId' => (int) $transition['eventId'], 'settledStatus' => 'CONCLUIDA',
                 'markPaid' => static function () use ($pixService, $invoiceId, $transition, $charge): void {
-                    $pixService->applyDiscountLineItem($invoiceId, (int) $transition['valueCents']);
+                    // Status antes do desconto: o UpdateInvoice do desconto dispara
+                    // UpdateInvoiceTotal, que tentaria revisar um Pix ainda "ATIVA".
                     ChargeRepository::updateStatus((int) $charge->id, 'CONCLUIDA');
+                    $pixService->applyDiscountLineItem($invoiceId, (int) $transition['valueCents'], $charge);
                 },
             ]);
         }
     } catch (\Throwable $e) {
-        GatewayLog::error('efi_pix', $pixParams, 'Falha ao processar webhook Pix', $e->getMessage());
+        GatewayLog::error($ownerModule, $ownerParams, 'Falha ao processar webhook Pix', $e->getMessage());
     }
 }
 
@@ -106,6 +120,7 @@ if (!empty($automaticParams['type'])) {
                 'amountCents' => (int) $transition['amountCents'], 'module' => PixAutomaticService::GATEWAY,
                 'gatewayParams' => $automaticParams,
                 'markApplied' => static function () use ($transition): void { PixAutomaticRepository::markEventApplied((int) $transition['eventId']); },
+                'markFailed' => static function () use ($transition): void { PixAutomaticRepository::markEventFailed((int) $transition['eventId']); },
             ]);
 
             $metadata = json_decode((string) $recurrence->metadata, true) ?: [];

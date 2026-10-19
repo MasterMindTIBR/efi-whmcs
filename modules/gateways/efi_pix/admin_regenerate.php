@@ -87,7 +87,7 @@ try {
     $api = EfiClientFactory::make($gatewayParams, true);
     $result = (new PixService($api, $gatewayParams))->regenerate(
         $invoiceId,
-        Money::toCents($invoice->total),
+        \EfiWhmcs\Support\InvoiceBalance::centsDue($invoiceId), // saldo, não o total: pagamentos parciais já recebidos não são cobrados de novo
         trim($client->firstname . ' ' . $client->lastname),
         $document
     );

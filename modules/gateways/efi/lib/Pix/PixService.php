@@ -18,10 +18,25 @@ final class PixService
 {
     public const RAIL = 'pix';
 
+    /**
+     * @param string $module gateway que está emitindo/gerindo a cobrança (`efi_pix`, ou
+     *                       `efi_pix_automatico` no Pix avulso de fallback). Vai para os logs e
+     *                       fica gravado no metadata da cobrança: é ele que diz ao webhook/cron
+     *                       com quais credenciais consultar e em nome de qual gateway creditar.
+     */
     public function __construct(
         private readonly EfiPay $api,
-        private readonly array $gatewayParams
+        private readonly array $gatewayParams,
+        private readonly string $module = 'efi_pix'
     ) {
+    }
+
+    /** Gateway dono de uma cobrança Pix do ledger (linhas anteriores a este campo: efi_pix). */
+    public static function moduleOf(object $charge): string
+    {
+        $metadata = json_decode((string) $charge->metadata, true) ?: [];
+
+        return (string) ($metadata['module'] ?? 'efi_pix');
     }
 
     public function issueOrFetch(
@@ -72,7 +87,7 @@ final class PixService
         try {
             $detail = $this->api->pixDetailCharge(['txid' => $charge->efi_charge_id]);
         } catch (EfiException $e) {
-            GatewayLog::error('efi_pix', $this->gatewayParams, 'Falha ao consultar Pix antes de revisar valor (' . $e->code . ')', [
+            GatewayLog::error($this->module, $this->gatewayParams, 'Falha ao consultar Pix antes de revisar valor (' . $e->code . ')', [
                 'error' => $e->errorDescription,
                 'invoice' => $invoiceId,
                 'txid' => $charge->efi_charge_id,
@@ -111,7 +126,7 @@ final class PixService
                 ['valor' => ['original' => $this->formatAmount($amountCents)]]
             );
         } catch (EfiException $e) {
-            GatewayLog::error('efi_pix', $this->gatewayParams, 'Falha ao revisar valor da cobrança Pix (' . $e->code . ')', [
+            GatewayLog::error($this->module, $this->gatewayParams, 'Falha ao revisar valor da cobrança Pix (' . $e->code . ')', [
                 'error' => $e->errorDescription,
                 'invoice' => $invoiceId,
                 'txid' => $charge->efi_charge_id,
@@ -160,7 +175,7 @@ final class PixService
             try {
                 $detail = $this->api->pixDetailCharge(['txid' => $existing->efi_charge_id]);
             } catch (EfiException $e) {
-                GatewayLog::error('efi_pix', $this->gatewayParams, 'Falha ao consultar Pix antes de renovar (' . $e->code . ')', [
+                GatewayLog::error($this->module, $this->gatewayParams, 'Falha ao consultar Pix antes de renovar (' . $e->code . ')', [
                     'error' => $e->errorDescription,
                     'invoice' => $invoiceId,
                     'txid' => $existing->efi_charge_id,
@@ -183,7 +198,7 @@ final class PixService
                         ['status' => 'REMOVIDA_PELO_USUARIO_RECEBEDOR']
                     );
                 } catch (EfiException $e) {
-                    GatewayLog::error('efi_pix', $this->gatewayParams, 'Falha ao desativar Pix antes de renovar (' . $e->code . ')', [
+                    GatewayLog::error($this->module, $this->gatewayParams, 'Falha ao desativar Pix antes de renovar (' . $e->code . ')', [
                         'error' => $e->errorDescription,
                         'invoice' => $invoiceId,
                         'txid' => $existing->efi_charge_id,
@@ -233,7 +248,7 @@ final class PixService
             $locId = (string) ($charge['loc']['id'] ?? '');
             $qr = $this->generateQrCode($locId);
         } catch (EfiException $e) {
-            GatewayLog::error('efi_pix', $this->gatewayParams, 'Falha ao criar cobrança Pix (' . $e->code . ')', [
+            GatewayLog::error($this->module, $this->gatewayParams, 'Falha ao criar cobrança Pix (' . $e->code . ')', [
                 'error' => $e->error,
                 'description' => $e->errorDescription,
                 'invoice' => $invoiceId,
@@ -245,7 +260,7 @@ final class PixService
         $txid = (string) ($charge['txid'] ?? '');
 
         if ($txid === '') {
-            GatewayLog::error('efi_pix', $this->gatewayParams, 'Resposta sem txid', $charge);
+            GatewayLog::error($this->module, $this->gatewayParams, 'Resposta sem txid', $charge);
             throw new \RuntimeException('A Efí não retornou um txid válido para a cobrança Pix.');
         }
 
@@ -273,7 +288,7 @@ final class PixService
             ]);
         }
 
-        GatewayLog::debug('efi_pix', $this->gatewayParams, 'Cobrança Pix criada', $charge);
+        GatewayLog::debug($this->module, $this->gatewayParams, 'Cobrança Pix criada', $charge);
 
         return [
             'txid' => $txid,
@@ -310,7 +325,7 @@ final class PixService
         try {
             return $this->api->pixGenerateQRCode(['id' => $locId]);
         } catch (EfiException $e) {
-            GatewayLog::error('efi_pix', $this->gatewayParams, 'Falha ao recuperar QR code (' . $e->code . ')', $e->errorDescription);
+            GatewayLog::error($this->module, $this->gatewayParams, 'Falha ao recuperar QR code (' . $e->code . ')', $e->errorDescription);
 
             return [];
         }
@@ -333,6 +348,7 @@ final class PixService
     private function metadata(int $baseAmountCents, float $discountPercent, ?string $copyPaste, ?string $qrImage, ?int $expiresAt = null): string
     {
         return json_encode([
+            'module' => $this->module,
             'base_amount_cents' => $baseAmountCents,
             'discount_percent' => $discountPercent,
             'copy_paste' => $copyPaste,
@@ -379,12 +395,15 @@ final class PixService
      * integral quita a fatura. Idempotente: só chamar uma vez por cobrança (ver callback, que
      * guarda por `charge->status`); chamar de novo duplicaria o desconto.
      */
-    public function applyDiscountLineItem(int $invoiceId, int $receivedAmountCents): void
+    public function applyDiscountLineItem(int $invoiceId, int $receivedAmountCents, ?object $charge = null): void
     {
-        $charge = ChargeRepository::findByInvoiceAndRail($invoiceId, self::RAIL);
+        // Os chamadores passam a cobrança já carregada porque gravam CONCLUIDA antes do
+        // desconto (o UpdateInvoice do desconto dispara UpdateInvoiceTotal, que tentaria
+        // revisar um Pix ainda "ativo") -- e CONCLUIDA já não é achado por findByInvoiceAndRail.
+        $charge ??= ChargeRepository::findByInvoiceAndRail($invoiceId, self::RAIL);
 
         if ($charge === null) {
-            GatewayLog::error('efi_pix', $this->gatewayParams, 'Pagamento Pix sem cobrança local para calcular desconto; revisão manual necessária', [
+            GatewayLog::error($this->module, $this->gatewayParams, 'Pagamento Pix sem cobrança local para calcular desconto; revisão manual necessária', [
                 'invoice_id' => $invoiceId,
                 'received_amount_cents' => $receivedAmountCents,
             ]);
@@ -395,7 +414,7 @@ final class PixService
         $discountCents = self::discountCentsForPayment($metadata, (int) $charge->amount_cents, $receivedAmountCents);
 
         if ($discountCents === null) {
-            GatewayLog::error('efi_pix', $this->gatewayParams, 'Valor Pix confirmado diverge da cobrança esperada; pagamento será aplicado sem desconto automático', [
+            GatewayLog::error($this->module, $this->gatewayParams, 'Valor Pix confirmado diverge da cobrança esperada; pagamento será aplicado sem desconto automático', [
                 'invoice_id' => $invoiceId,
                 'charge_id' => $charge->id,
                 'expected_amount_cents' => (int) $charge->amount_cents,
@@ -416,7 +435,7 @@ final class PixService
         ], null);
 
         if (($results['result'] ?? '') !== 'success') {
-            GatewayLog::error('efi_pix', $this->gatewayParams, 'Falha ao lançar item de desconto Pix na fatura', [
+            GatewayLog::error($this->module, $this->gatewayParams, 'Falha ao lançar item de desconto Pix na fatura', [
                 'invoice_id' => $invoiceId,
                 'result' => $results,
             ]);
@@ -445,7 +464,7 @@ final class PixService
     /** The only lifecycle path allowed to persist a confirmed Pix payment is PaymentApplier. */
     private function logPaidOutsideBillingCycle(int $invoiceId, string $txid, object $charge, array $detail): void
     {
-        GatewayLog::error('efi_pix', $this->gatewayParams, 'Pix pago em fatura fora do ciclo de cobrança — revisão manual', [
+        GatewayLog::error($this->module, $this->gatewayParams, 'Pix pago em fatura fora do ciclo de cobrança — revisão manual', [
             'invoice_id' => $invoiceId,
             'txid' => $txid,
             'charge_id' => $charge->id,
@@ -473,7 +492,7 @@ final class PixService
         try {
             $detail = $this->api->pixDetailCharge(['txid' => $charge->efi_charge_id]);
         } catch (EfiException $e) {
-            GatewayLog::error('efi_pix', $this->gatewayParams, 'Falha ao consultar Pix antes de cancelar (' . $e->code . ')', [
+            GatewayLog::error($this->module, $this->gatewayParams, 'Falha ao consultar Pix antes de cancelar (' . $e->code . ')', [
                 'error' => $e->errorDescription, 'invoice' => $invoiceId, 'txid' => $charge->efi_charge_id,
             ]);
             return;
@@ -500,7 +519,7 @@ final class PixService
             }
             ChargeRepository::updateStatus((int) $charge->id, $removedStatus);
         } catch (EfiException $e) {
-            GatewayLog::error('efi_pix', $this->gatewayParams, 'Falha ao cancelar cobrança Pix (' . $e->code . ')', [
+            GatewayLog::error($this->module, $this->gatewayParams, 'Falha ao cancelar cobrança Pix (' . $e->code . ')', [
                 'error' => $e->errorDescription, 'invoice' => $invoiceId, 'txid' => $charge->efi_charge_id,
             ]);
         }

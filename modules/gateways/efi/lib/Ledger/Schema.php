@@ -19,6 +19,14 @@ final class Schema
             return;
         }
 
+        // PHP-FPM reinicia o `static` a cada requisição: sem este atalho, toda requisição que
+        // toca o ledger pagaria 2 consultas a information_schema + 3 SELECTs de versão. Com ele,
+        // uma instalação já migrada paga uma única consulta.
+        if (self::latestVersionApplied()) {
+            self::$ensured = true;
+            return;
+        }
+
         self::ensureVersionTable();
         self::ensureCharges();
         self::ensureEvents();
@@ -26,6 +34,17 @@ final class Schema
         self::migrate(2, [self::class, 'migrateEventLifecycle']);
         self::migrate(3, [self::class, 'migratePixRemovalStatuses']);
         self::$ensured = true;
+    }
+
+    private const LATEST_VERSION = 3;
+
+    private static function latestVersionApplied(): bool
+    {
+        try {
+            return (int) Capsule::table('mod_efi_schema_version')->where('module', self::MODULE)->max('version') >= self::LATEST_VERSION;
+        } catch (\Throwable) {
+            return false; // tabela ainda não existe: instalação nova ou anterior ao versionamento.
+        }
     }
 
     /** Allows each isolated in-memory test database to run the migrations. */
@@ -113,8 +132,12 @@ final class Schema
         } catch (\Throwable) {}
         try { $schema->table('mod_efi_charges', function ($table) { $table->dropUnique('uniq_invoice_rail'); }); } catch (\Throwable) {}
         try { $schema->table('mod_efi_charges', function ($table) { $table->index(['invoice_id', 'rail'], 'idx_invoice_rail'); }); } catch (\Throwable) {}
+        // `status` continua VARCHAR: versões anteriores já gravaram valores livres ('error',
+        // 'refunded', 'REMOVIDA_PELO_USUARIO_RECEBEDOR', ...). Uma conversão para ENUM aqui
+        // falhava (MySQL estrito: "Data truncated") ou zerava esses valores (não estrito)
+        // no primeiro upgrade de uma instalação com histórico real.
         if (Capsule::connection()->getDriverName() === 'mysql') {
-            Capsule::statement("ALTER TABLE mod_efi_charges MODIFY status ENUM('new','waiting','unpaid','ATIVA','creating','approved','unknown','failed-unknown','paid','CONCLUIDA','canceled','expired','superseded') NOT NULL DEFAULT 'new'");
+            Capsule::statement("ALTER TABLE mod_efi_charges MODIFY status VARCHAR(32) NOT NULL DEFAULT 'new'");
         }
     }
 

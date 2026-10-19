@@ -31,6 +31,35 @@ final class ChargeRepository
         return Capsule::table('mod_efi_charges')->where('efi_charge_id', $efiChargeId)->first();
     }
 
+    /** Última emissão vigente da fatura neste trilho, em qualquer status (inclusive paga); ignora as substituídas. */
+    public static function latestForInvoice(int $invoiceId, string $rail): ?object
+    {
+        return Capsule::table('mod_efi_charges')->where('invoice_id', $invoiceId)->where('rail', $rail)
+            ->where('status', '!=', 'superseded')->orderByDesc('id')->first();
+    }
+
+    /**
+     * Soma um estorno ao total estornado da cobrança (metadata.refunded_cents) e devolve o novo
+     * total. Lê e grava sob `SELECT ... FOR UPDATE`: dois estornos simultâneos não perdem
+     * um incremento.
+     */
+    public static function addRefundedCents(int $chargeId, int $cents): int
+    {
+        return (int) Capsule::connection()->transaction(static function () use ($chargeId, $cents): int {
+            $row = Capsule::table('mod_efi_charges')->where('id', $chargeId)->lockForUpdate()->first(['metadata', 'amount_cents']);
+            $metadata = json_decode((string) ($row->metadata ?? ''), true) ?: [];
+            $total = (int) ($metadata['refunded_cents'] ?? 0) + $cents;
+            $metadata['refunded_cents'] = $total;
+            Capsule::table('mod_efi_charges')->where('id', $chargeId)->update([
+                'metadata' => json_encode($metadata) ?: '{}',
+                'status' => $total >= (int) ($row->amount_cents ?? 0) ? 'refunded' : 'partially_refunded',
+                'updated_at' => date('Y-m-d H:i:s'),
+            ]);
+
+            return $total;
+        });
+    }
+
     public static function create(array $attributes): int
     {
         $now = date('Y-m-d H:i:s');

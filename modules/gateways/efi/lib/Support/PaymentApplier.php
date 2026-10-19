@@ -12,7 +12,15 @@ use WHMCS\Database\Capsule;
 final class PaymentApplier
 {
     /**
-     * @param array{invoiceId:int,transId:string,amountCents:int,module:string,gatewayParams:array,chargeId?:int,eventId?:int,markPaid?:callable,markApplied?:callable} $payment
+     * @param array{invoiceId:int,transId:string,amountCents:int,module:string,gatewayParams:array,chargeId?:int,eventId?:int,settledStatus?:string,markPaid?:callable,markSettled?:callable,markApplied?:callable,markFailed?:callable} $payment
+     *
+     * Callbacks:
+     * - markSettled: só grava no ledger que o provedor confirmou o pagamento (sem efeitos
+     *   colaterais). Padrão: `chargeId` → status `settledStatus` (default 'paid').
+     * - markPaid: roda imediatamente antes de addInvoicePayment, só no caminho que de fato
+     *   aplica o pagamento (é onde ficam efeitos únicos, como o item de desconto). Padrão:
+     *   markSettled.
+     * - markApplied / markFailed: fecham o evento como aplicado ou como terminal-sem-efeito.
      */
     public static function apply(array $payment): bool
     {
@@ -25,12 +33,16 @@ final class PaymentApplier
         try {
             $locked = self::lock($invoiceId);
             if (!$locked) {
+                // Transitório: o evento continua pending e o cron tenta de novo.
                 GatewayLog::error($module, $params, 'Falha ao obter trava da fatura; pagamento confirmado não foi aplicado', ['invoice_id' => $invoiceId, 'transid' => $transId]);
                 return false;
             }
 
             // Always check the canonical transaction before looking at the invoice state.
             if (Capsule::table('tblaccounts')->where('transid', $transId)->exists()) {
+                // Já aplicado (outra entrega, o cron, ou o próprio WHMCS via _capture): só
+                // alinha o ledger -- nunca repete efeitos de markPaid (ex.: desconto).
+                self::markSettled($payment);
                 self::markApplied($payment);
                 return true;
             }
@@ -41,6 +53,11 @@ final class PaymentApplier
                     'invoice_id' => $invoiceId, 'transid' => $transId, 'amount_cents' => (int) $payment['amountCents'],
                     'invoice_status' => $invoice->status ?? 'missing',
                 ]);
+                // Terminal: o dinheiro entrou na Efí, mas não há mais fatura em aberto para
+                // creditar -- revisão manual (crédito ou devolução). O ledger reflete o
+                // provedor e o evento sai da fila, em vez de ser reprocessado todo dia.
+                self::markSettled($payment);
+                self::markFailed($payment);
                 return false;
             }
 
@@ -68,8 +85,17 @@ final class PaymentApplier
     {
         if (isset($payment['markPaid'])) {
             ($payment['markPaid'])();
+        } else {
+            self::markSettled($payment);
+        }
+    }
+
+    private static function markSettled(array $payment): void
+    {
+        if (isset($payment['markSettled'])) {
+            ($payment['markSettled'])();
         } elseif (isset($payment['chargeId'])) {
-            ChargeRepository::updateStatus((int) $payment['chargeId'], 'paid');
+            ChargeRepository::updateStatus((int) $payment['chargeId'], (string) ($payment['settledStatus'] ?? 'paid'));
         }
     }
 
@@ -79,6 +105,15 @@ final class PaymentApplier
             ($payment['markApplied'])();
         } elseif (isset($payment['eventId'])) {
             EventRepository::markApplied((int) $payment['eventId']);
+        }
+    }
+
+    private static function markFailed(array $payment): void
+    {
+        if (isset($payment['markFailed'])) {
+            ($payment['markFailed'])();
+        } elseif (isset($payment['eventId'])) {
+            EventRepository::markFailed((int) $payment['eventId']);
         }
     }
 

@@ -79,11 +79,13 @@ function efi_boleto_apply_transitions(array $transitions, \Efi\EfiPay $api, stri
                     'invoiceId' => $invoiceId, 'transId' => (string) $charge->efi_charge_id,
                     'amountCents' => $transition['valueCents'] ?? (int) $charge->amount_cents,
                     'module' => $gatewayModuleName, 'gatewayParams' => $gatewayParams,
-                    'eventId' => (int) $transition['eventId'],
+                    'eventId' => (int) $transition['eventId'], 'chargeId' => (int) $charge->id,
                     'markPaid' => static function () use ($boletoService, $invoiceId, $charge, $transition): void {
+                        // Status antes do desconto: o UpdateInvoice do desconto dispara o hook
+                        // UpdateInvoiceTotal, que tentaria cancelar um boleto ainda "ativo".
+                        ChargeRepository::updateStatus((int) $charge->id, 'paid');
                         $amountCents = $transition['valueCents'] ?? (int) $charge->amount_cents;
                         $boletoService->applyDiscountLineItem($invoiceId, $amountCents, $charge);
-                        ChargeRepository::updateStatus((int) $charge->id, 'paid');
                     },
                 ]);
                 break;
