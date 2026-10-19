@@ -51,7 +51,7 @@ final class EfiClientFactory
             // O SDK imprime o trace cURL no corpo da resposta quando debug=true.
             // Endpoints AJAX devem sempre devolver JSON válido.
             'debug' => false,
-            'cache' => true,
+            'cache' => false,
             'timeout' => 30,
         ];
 
@@ -82,12 +82,14 @@ final class EfiClientFactory
     }
 
     /**
-     * O SDK da Efí grava o cache de access token (criptografado) e o caminho resolvido do
-     * certificado em `sys_get_temp_dir() . '/efi_cache'`, sem nenhuma opção nativa de
-     * configuração para apontar para outro diretório (ver `Efi\FileCacheRetriever`). Em
-     * hospedagem compartilhada isso cai no `/tmp` do sistema operacional, visível/gravável por
-     * qualquer outro processo da máquina (outros sites, cron, etc.) -- mesmo com o conteúdo
-     * cifrado, é superfície de ataque desnecessária.
+     * O SDK da Efí grava o cache de access token (criptografado, e agora desligado via
+     * `'cache' => false` em `buildOptions()` -- o token OAuth nunca mais chega ao disco) e o
+     * caminho resolvido do certificado em `sys_get_temp_dir() . '/efi_cache'`, sem nenhuma
+     * opção nativa de configuração para apontar para outro diretório (ver
+     * `Efi\FileCacheRetriever`). Em hospedagem compartilhada isso cai no `/tmp` do sistema
+     * operacional, visível/gravável por qualquer outro processo da máquina -- mesmo sem o
+     * token, o construtor do SDK ainda tenta criar esse diretório, então mantemos o
+     * redirecionamento como defesa em profundidade.
      *
      * `putenv('TMPDIR=...')` NÃO é confiável aqui: `sys_get_temp_dir()` cacheia o resultado na
      * primeira chamada de todo o request (`BG(temp_directory)` do PHP) -- se qualquer código
@@ -96,12 +98,18 @@ final class EfiClientFactory
      * resto do request. Por isso usamos `EFI_SDK_CACHE_DIR`, uma env própria lida via
      * `getenv()` (sem cache de engine) dentro de um patch local em `FileCacheRetriever` --
      * ver o comentário "PATCH LOCAL" naquele arquivo.
+     *
+     * `putenv()` pode estar em `disable_functions` em hospedagem compartilhada (mitigação
+     * comum contra bypass de `open_basedir` via `LD_PRELOAD`); chamá-la nesse caso lança
+     * `Error: Call to undefined function` em PHP 8, derrubando TODA chamada à Efí. Quando
+     * indisponível, pula o redirecionamento (o SDK volta para `/tmp` compartilhado só para o
+     * diretório, nunca para o token -- já eliminado por `cache => false`).
      */
     private static function redirectSdkCache(): void
     {
         static $done = false;
 
-        if ($done) {
+        if ($done || !function_exists('putenv')) {
             return;
         }
 
@@ -111,7 +119,6 @@ final class EfiClientFactory
             return; // sem diretório privado disponível; segue com o padrão do SDK
         }
 
-        @chmod($dir, 0700);
         putenv('EFI_SDK_CACHE_DIR=' . (realpath($dir) ?: $dir));
         $done = true;
     }

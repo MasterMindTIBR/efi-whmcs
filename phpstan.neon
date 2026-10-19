@@ -1,0 +1,24 @@
+parameters:
+    level: 2
+    paths:
+        - modules/gateways
+        - includes/hooks
+    excludePaths:
+        - modules/gateways/efi/vendor/*
+    bootstrapFiles:
+        - modules/gateways/efi/vendor/autoload.php
+    ignoreErrors:
+        # O WHMCS core (classes como App/Capsule/Setting e funções globais como
+        # addInvoicePayment/logTransaction/localAPI/createCardPayMethod/checkCbTransID) não
+        # publica stubs para análise estática; fora de uma instalação real essas classes e
+        # funções simplesmente não existem para o PHPStan. Isso é esperado e não indica um erro
+        # real no código -- só reduz a precisão da análise para esses pontos específicos.
+        - '#Function [a-zA-Z_]+ not found\.#'
+        - '#unknown class WHMCS\\#'
+        - '#unknown class Illuminate\\#'
+        - '#Constant WHMCS not found\.#'
+        - '#Constant ROOTDIR not found\.#'
+        # Assinatura divergente do SDK da Efí (`getNotification`) que não afeta nosso uso real
+        # (sempre chamado com os dois argumentos documentados pela API de Cobranças).
+        - '#Method Efi\\EfiPay::getNotification\(\) invoked with 2 parameters, 1 required\.#'
+    reportUnmatchedIgnoredErrors: false

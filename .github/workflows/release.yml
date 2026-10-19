@@ -1,19 +1,20 @@
-name: Release
+name: CI / Release
 
-# Push a version tag (e.g. 1.0.0 — no leading "v") to package the module and
-# publish a GitHub Release with the matching CHANGELOG.md section as the
-# release notes, plus the zip. Same convention as the author's other projects:
+# CI roda em todo push/PR (lint, PHPStan, testes). O empacotamento e a release do GitHub só
+# rodam quando uma tag de versão é empurrada (e.g. 1.0.0 -- sem "v" no início):
 #
 #   git tag 1.0.0 && git push origin 1.0.0
 #
-# The tag push must come from a real git identity, not the default
-# GITHUB_TOKEN — GitHub suppresses events created by GITHUB_TOKEN from
-# triggering other workflows, so a bot-pushed tag would never fire this.
+# A tag precisa vir de uma identidade git real, não do GITHUB_TOKEN padrão -- o GitHub
+# suprime eventos criados pelo GITHUB_TOKEN de disparar outros workflows, então uma tag
+# empurrada por um bot nunca dispararia este workflow.
 
 on:
   push:
+    branches: ["main"]
     tags:
       - "[0-9]+.[0-9]+.[0-9]+"
+  pull_request:
 
 env:
   VERSION: ${{ github.ref_name }}
@@ -23,23 +24,81 @@ permissions:
 
 jobs:
   lint:
-    name: Lint PHP
+    name: Lint + PHPStan (PHP ${{ matrix.php }})
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        php: ["8.1", "8.2", "8.3"]
     steps:
       - uses: actions/checkout@v4
       - uses: shivammathur/setup-php@v2
         with:
-          php-version: "8.1"
+          php-version: ${{ matrix.php }}
       - name: Syntax check
         run: |
-          find modules includes/hooks -name "*.php" -print0 | xargs -0 -n1 php -l
+          find modules includes/hooks -name "*.php" -not -path "*/vendor/*" -print0 | xargs -0 -n1 php -l
+      - name: PHPStan
+        if: matrix.php == '8.3'
+        run: |
+          curl -sSL -o /tmp/phpstan.phar https://github.com/phpstan/phpstan/releases/latest/download/phpstan.phar
+          php /tmp/phpstan.phar analyse -c phpstan.neon --no-progress
 
-  create_release:
-    name: Create release
-    needs: lint
+  test:
+    name: PHPUnit (unit + concorrência MySQL)
+    runs-on: ubuntu-latest
+    services:
+      mysql:
+        image: mysql:8.0
+        env:
+          MYSQL_ALLOW_EMPTY_PASSWORD: yes
+          MYSQL_DATABASE: efi_test
+        ports: ["3306:3306"]
+        options: >-
+          --health-cmd="mysqladmin ping" --health-interval=5s --health-timeout=5s
+          --health-retries=10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: "8.3"
+          extensions: pdo_mysql, pdo_sqlite
+      - name: Install dev-only test suite
+        working-directory: tests
+        run: composer install --no-interaction --prefer-dist
+      - name: Unit tests (SQLite)
+        working-directory: tests
+        run: vendor/bin/phpunit --testsuite unit
+      - name: Concurrency test (MySQL real)
+        working-directory: tests
+        env:
+          EFI_TEST_DB: mysql
+          EFI_TEST_MYSQL_HOST: 127.0.0.1
+          EFI_TEST_MYSQL_PORT: "3306"
+          EFI_TEST_MYSQL_DB: efi_test
+          EFI_TEST_MYSQL_USER: root
+          EFI_TEST_MYSQL_PASSWORD: ""
+        run: vendor/bin/phpunit --testsuite integration
+
+
+  release:
+    name: Build zip & create release
+    if: startsWith(github.ref, 'refs/tags/')
+    needs: [lint, test]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Build zip
+        run: |
+          mkdir -p /tmp/pkg
+          cp -r modules includes README.md LICENSE /tmp/pkg/
+          cd /tmp/pkg
+          zip -r "$GITHUB_WORKSPACE/efi-whmcs-${VERSION}.zip" .
+      - name: Fail if CHANGELOG.md has no matching version section
+        run: |
+          grep -q "^## \[${VERSION}\]" CHANGELOG.md || {
+            echo "::error::CHANGELOG.md não tem uma seção '## [${VERSION}]'; adicione antes de taguear." >&2
+            exit 1
+          }
       - name: Extract changelog section
         run: |
           python3 - <<'PY'
@@ -50,32 +109,16 @@ jobs:
           content = open("CHANGELOG.md", encoding="utf-8").read()
           pattern = rf"^## \[{re.escape(version)}\].*?(?=^## \[|\Z)"
           match = re.search(pattern, content, re.S | re.M)
-          notes = match.group(0).strip() if match else f"Release {version}"
+          notes = match.group(0).strip()
           with open("release_notes.md", "w", encoding="utf-8") as f:
               f.write(notes)
           PY
-      - name: Create GitHub Release
+      - name: Create GitHub Release with the zip already built
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           gh release create "$VERSION" \
+            "efi-whmcs-${VERSION}.zip" \
             --title "$VERSION" \
             --notes-file release_notes.md \
             --verify-tag
-
-  package:
-    name: Package & upload module zip
-    needs: create_release
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - name: Build zip
-        run: |
-          mkdir -p /tmp/pkg
-          cp -r modules includes README.md LICENSE /tmp/pkg/
-          cd /tmp/pkg
-          zip -r "$GITHUB_WORKSPACE/efi-whmcs-${VERSION}.zip" .
-      - name: Upload to release
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: gh release upload "$VERSION" "efi-whmcs-${VERSION}.zip" --clobber

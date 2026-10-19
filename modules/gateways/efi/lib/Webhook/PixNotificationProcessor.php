@@ -14,7 +14,7 @@ use EfiWhmcs\Support\GatewayLog;
  * Diferente da API de Cobranças, a API Pix empurra o payload diretamente no corpo do POST (é o
  * padrão definido pelo Banco Central), protegido por mTLS na camada de transporte. Como defesa
  * em profundidade dentro da aplicação (a mTLS é configurada no servidor web, fora do alcance
- * deste módulo -- ver docs/INSTALACAO.md), NUNCA confiamos no valor/status do payload recebido:
+ * deste módulo -- ver README.md, seção "Pix" e "Nginx/Apache"), NUNCA confiamos no valor/status do payload recebido:
  * toda notificação é confirmada consultando `pixDetailCharge` com nossas credenciais antes de
  * qualquer efeito ser aplicado, e o parâmetro `?ws=` da URL cadastrada é validado antes de gastar
  * uma chamada de API.

@@ -625,10 +625,7 @@ add_hook('AdminAreaFooterOutput', 1, function ($vars) {
 
     return '<script>
     (function () {
-        ["efi_boleto", "efi_pix", "efi_cartao"].forEach(function (mod) {
-            var panel = document.querySelector("a[href*=\'gateway=" + mod + "\']");
-            if (!panel) { return; }
-        });
+        var csrfToken = "' . addslashes(\EfiWhmcs\Support\AdminCsrf::token()) . '";
 
         function addTestButton(moduleName) {
             var forms = document.querySelectorAll("form[action*=\'" + moduleName + "\']");
@@ -644,7 +641,7 @@ add_hook('AdminAreaFooterOutput', 1, function ($vars) {
                         method: "POST",
                         credentials: "same-origin",
                         headers: { "Content-Type": "application/x-www-form-urlencoded" },
-                        body: "module=" + moduleName
+                        body: "module=" + moduleName + "&csrf=" + encodeURIComponent(csrfToken)
                     }).then(function (r) { return r.json(); }).then(function (data) {
                         alert(data.message);
                         btn.disabled = false;
@@ -660,6 +657,7 @@ add_hook('AdminAreaFooterOutput', 1, function ($vars) {
         addTestButton("efi_boleto");
         addTestButton("efi_pix");
         addTestButton("efi_cartao");
+        addTestButton("efi_pix_automatico");
     })();
     </script>';
 });

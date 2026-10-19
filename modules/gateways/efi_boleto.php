@@ -4,7 +4,7 @@
  * Efí - Boleto Bancário (WHMCS Gateway Module - Third Party / transparente).
  *
  * Renderiza o status/boleto diretamente na página da fatura (sem popup/iframe). Ver
- * docs/ARQUITETURA.md para o desenho completo.
+ * README.md para o desenho geral do módulo e a configuração de cada gateway.
  */
 
 use EfiWhmcs\Boleto\BoletoService;

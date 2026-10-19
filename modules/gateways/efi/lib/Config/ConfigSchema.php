@@ -5,7 +5,7 @@ namespace EfiWhmcs\Config;
 /**
  * Campos de configuração compartilhados pelos três módulos de gateway. Cada módulo chama
  * `ConfigSchema::common($friendlyName)` e mescla os campos específicos dele (boleto/pix/cartão)
- * — ver docs/ARQUITETURA.md §3.3.
+ * — ver README.md para a lista de campos de cada gateway.
  */
 final class ConfigSchema
 {

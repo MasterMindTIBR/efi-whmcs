@@ -4,7 +4,7 @@
  * Efí - Pix (WHMCS Gateway Module - Third Party / transparente).
  *
  * QR code + copia-e-cola renderizados diretamente na página da fatura (sem popup/iframe).
- * Ver docs/ARQUITETURA.md para o desenho completo.
+ * Ver README.md para o desenho geral do módulo e a configuração de cada gateway.
  */
 
 use EfiWhmcs\Config\ConfigSchema;

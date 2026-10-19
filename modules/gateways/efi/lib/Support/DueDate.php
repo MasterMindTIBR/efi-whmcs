@@ -9,7 +9,7 @@ use DateTimeZone;
 /**
  * Cálculo de vencimento do boleto e realinhamento quando a fatura WHMCS muda de data.
  *
- * Regra (ver docs/ARQUITETURA.md §1.7): o offset em dias configurado
+ * Regra (ver README.md, seção Boleto): o offset em dias configurado
  * (`due_days_offset`) é aplicado UMA VEZ, sobre a data de vencimento *da fatura WHMCS*, tanto
  * na emissão quanto em qualquer realinhamento futuro. O offset efetivamente usado na emissão é
  * gravado por cobrança (`mod_efi_charges.due_offset_days`) e é esse valor gravado -- não a

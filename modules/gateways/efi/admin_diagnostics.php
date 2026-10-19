@@ -10,6 +10,8 @@ require_once __DIR__ . '/../../../init.php';
 require_once __DIR__ . '/vendor/autoload.php';
 
 use Efi\Exception\EfiException;
+use EfiWhmcs\PixAutomatic\PixAutomaticService;
+use EfiWhmcs\Support\AdminCsrf;
 use EfiWhmcs\Support\EfiClientFactory;
 use EfiWhmcs\Support\GatewayLoader;
 
@@ -21,9 +23,15 @@ if (empty($_SESSION['adminid'])) {
     exit;
 }
 
+if (!AdminCsrf::verify($_POST['csrf'] ?? null)) {
+    http_response_code(403);
+    echo json_encode(['success' => false, 'message' => 'Sessão expirada; recarregue a página e tente de novo.']);
+    exit;
+}
+
 $module = (string) ($_POST['module'] ?? '');
 
-if (!in_array($module, ['efi_boleto', 'efi_pix', 'efi_cartao'], true)) {
+if (!in_array($module, ['efi_boleto', 'efi_pix', 'efi_cartao', PixAutomaticService::GATEWAY], true)) {
     http_response_code(400);
     echo json_encode(['success' => false, 'message' => 'Módulo inválido.']);
     exit;
@@ -37,11 +45,11 @@ if ($gatewayParams === null) {
 }
 
 try {
-    $requiresCert = $module === 'efi_pix';
+    $requiresCert = in_array($module, ['efi_pix', PixAutomaticService::GATEWAY], true);
     $api = EfiClientFactory::make($gatewayParams, $requiresCert);
     $extra = '';
 
-    if ($module === 'efi_pix') {
+    if ($requiresCert) {
         // Chamada de escopo Pix (webhook.read) -- autentica e confirma o registro do webhook
         // na mesma chamada. Um endpoint de Cobranças (ex.: listPlans) não serve aqui: as
         // credenciais Pix podem não ter escopo de Cobranças.

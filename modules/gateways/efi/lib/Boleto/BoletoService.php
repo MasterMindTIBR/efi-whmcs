@@ -27,7 +27,7 @@ final class BoletoService
 
     /**
      * Emite (ou recupera, se já existir) o boleto para a fatura, aplicando o offset de
-     * vencimento configurado. Ver docs/ARQUITETURA.md §1.7 para a semântica do offset.
+     * vencimento configurado. Ver README.md (seção Boleto) para a semântica do offset.
      *
      * @param array $items [['name'=>string,'amount'=>int,'value_cents'=>int], ...]
      */

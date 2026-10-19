@@ -9,7 +9,7 @@
  * pelo nosso backend PHP -- são capturados e tokenizados inteiramente no navegador do cliente
  * pela lib oficial `payment-token-efi` dentro do iframe que o próprio WHMCS renderiza
  * (`#tokenGatewayRemoteInputOutput` / `ccframe`) tanto no checkout quanto na tela "Métodos de
- * Pagamento" do cliente. Ver docs/ARQUITETURA.md.
+ * Pagamento" do cliente. Ver README.md.
  *
  * Sem `_link`: para gateways de cartão tokenizados via remote input, o próprio WHMCS decide
  * exibir o iframe (não este módulo).

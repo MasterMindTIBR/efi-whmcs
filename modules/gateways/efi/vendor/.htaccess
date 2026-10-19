@@ -1,0 +1,12 @@
+# Nega todo acesso HTTP direto ao SDK da Efí e suas dependências. Nada aqui precisa ser servido
+# como estático: inclui os exemplos (efipay/sdk-php-apis-efi/examples/), que fazem chamadas
+# reais à API de produção com credenciais placeholder e trazem um conversor de certificado .p12
+# sem autenticação (certificate_converter.php) e um script de varredura de diretórios
+# (migrationChecker.php) -- nenhum dos dois é usado por este módulo.
+<IfModule mod_authz_core.c>
+    Require all denied
+</IfModule>
+<IfModule !mod_authz_core.c>
+    Order allow,deny
+    Deny from all
+</IfModule>

@@ -1,4 +1,8 @@
 # Notas internas de arquitetura -- não publicadas no repositório.
+
+# Análises internas e ferramentas operacionais específicas do ambiente (receiver de deploy,
+# segredos locais) -- nunca publicadas no repositório público.
+/.local/
 /ARQUITETURA.md
 
 # SO / editor

@@ -10,8 +10,7 @@
     "long": "Módulo de cartão de crédito Efí com tokenização no navegador e cobrança recorrente pelo WHMCS.",
     "features": [
       "Tokenização de cartão no navegador",
-      "Cobrança recorrente pelo WHMCS",
-      "Suporte a 3D Secure"
+      "Cobrança recorrente pelo WHMCS"
     ]
   },
   "logo": {
