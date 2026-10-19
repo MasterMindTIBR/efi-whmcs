@@ -49,8 +49,8 @@ $remoteAddr = (string) ($_SERVER['REMOTE_ADDR'] ?? '');
 
 if (!WebhookIpAllowlist::allows($remoteAddr, $pixParams, $automaticParams)) {
     GatewayLog::error('efi_pix', $pixParams, 'Webhook Pix rejeitado: IP de origem fora da lista permitida (mTLS pulado)', ['ip' => $remoteAddr]);
-    http_response_code(200);
-    echo '200';
+    http_response_code(WebhookIpAllowlist::responseStatus(false));
+    echo '403';
     exit;
 }
 
@@ -73,10 +73,7 @@ if (!empty($pixParams['type'])) {
 
             $metadata = json_decode((string) $charge->metadata, true) ?: [];
             $metadata['e2e_id'] = $transition['e2eId'];
-            Capsule::table('mod_efi_charges')->where('id', $charge->id)->update([
-                'metadata' => json_encode($metadata),
-                'updated_at' => date('Y-m-d H:i:s'),
-            ]);
+            ChargeRepository::updateMetadata((int) $charge->id, json_encode($metadata) ?: '{}');
 
             $alreadyConcluded = $charge->status === 'CONCLUIDA';
 

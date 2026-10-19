@@ -13,7 +13,17 @@ final class ChargeRepository
     public static function findByInvoiceAndRail(int $invoiceId, string $rail): ?object
     {
         return Capsule::table('mod_efi_charges')->where('invoice_id', $invoiceId)->where('rail', $rail)
-            ->whereIn('status', self::ACTIVE_STATUSES)->orderByDesc('id')->first();
+            ->where(function ($query) use ($rail): void {
+                $query->whereIn('status', self::ACTIVE_STATUSES);
+
+                // A Pix removal is terminal at Efí, but not for the invoice lifecycle: an
+                // invoice can be reopened and must then receive a fresh charge rather than a
+                // dead QR code. Keep the historical row addressable until reissue() supersedes
+                // it. Other rails do not have this provider state.
+                if ($rail === 'pix') {
+                    $query->orWhere('status', 'like', 'REMOVIDA%');
+                }
+            })->orderByDesc('id')->first();
     }
 
     public static function findByEfiChargeId(string $efiChargeId): ?object
@@ -85,5 +95,12 @@ final class ChargeRepository
     public static function updateMetadata(int $id, string $metadata): void
     {
         Capsule::table('mod_efi_charges')->where('id', $id)->update(['metadata' => $metadata, 'updated_at' => date('Y-m-d H:i:s')]);
+    }
+
+    public static function findByPixEndToEndId(string $endToEndId): ?object
+    {
+        return Capsule::table('mod_efi_charges')->where('rail', 'pix')
+            ->where('metadata', 'like', '%"e2e_id":"' . addcslashes($endToEndId, '\\%_') . '"%')
+            ->orderByDesc('id')->first();
     }
 }

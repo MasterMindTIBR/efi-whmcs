@@ -34,14 +34,15 @@ final class PixNotificationProcessor
         $payload = json_decode($rawBody, true);
         $entries = $payload['pix'] ?? null;
 
-        if (!is_array($entries) || $entries === []) {
+        if ((!is_array($entries) || $entries === []) && empty($payload['devolucoes'])) {
             // Notificação de teste do cadastro do webhook, ou payload sem entradas -- não é erro.
             return [];
         }
 
         $transitions = [];
 
-        foreach ($entries as $entry) {
+        foreach (is_array($entries) ? $entries : [] as $entry) {
+            $this->recordDevolutions($entry, $entry['devolucoes'] ?? []);
             $txid = (string) ($entry['txid'] ?? '');
             $e2eId = (string) ($entry['endToEndId'] ?? '');
 
@@ -101,6 +102,62 @@ final class PixNotificationProcessor
             ];
         }
 
+        // Some Efí webhook integrations send received devolutions at the top level rather than
+        // nested below the original Pix. They carry the same endToEndId as the payment.
+        $this->recordDevolutions([], $payload['devolucoes'] ?? []);
+
         return $transitions;
+    }
+
+    /** Records a received devolution/MED without making an accounting reversal in WHMCS. */
+    private function recordDevolutions(array $pix, mixed $devolutions): void
+    {
+        if (!is_array($devolutions)) {
+            return;
+        }
+
+        foreach ($devolutions as $devolution) {
+            if (!is_array($devolution)) {
+                continue;
+            }
+
+            $rtrId = (string) ($devolution['rtrId'] ?? '');
+            $e2eId = (string) ($devolution['endToEndId'] ?? $pix['endToEndId'] ?? '');
+            $txid = (string) ($devolution['txid'] ?? $pix['txid'] ?? '');
+
+            if ($rtrId === '' || ($txid === '' && $e2eId === '')) {
+                GatewayLog::error('efi_pix', $this->gatewayParams, 'Devolução Pix malformada ignorada', $devolution);
+                continue;
+            }
+
+            $charge = $txid !== '' ? ChargeRepository::findByEfiChargeId($txid) : ChargeRepository::findByPixEndToEndId($e2eId);
+            if ($charge === null) {
+                GatewayLog::error('efi_pix', $this->gatewayParams, 'Devolução Pix sem correspondência no ledger local', $devolution);
+                continue;
+            }
+
+            $eventId = EventRepository::tryClaim(
+                (int) $charge->id,
+                'devolucao:' . $rtrId,
+                $charge->status,
+                (string) ($devolution['status'] ?? 'NAO_REALIZADO'),
+                (string) $charge->efi_charge_id
+            );
+
+            if ($eventId === null) {
+                continue;
+            }
+
+            EventRepository::markApplied($eventId);
+            GatewayLog::error('efi_pix', $this->gatewayParams, 'Devolução Pix/MED recebida — revisão manual necessária', [
+                'invoice_id' => $charge->invoice_id,
+                'charge_id' => $charge->id,
+                'txid' => $charge->efi_charge_id,
+                'endToEndId' => $e2eId,
+                'rtrId' => $rtrId,
+                'status' => $devolution['status'] ?? null,
+                'payload' => $devolution,
+            ]);
+        }
     }
 }

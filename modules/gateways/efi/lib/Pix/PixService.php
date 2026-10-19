@@ -8,7 +8,6 @@ use EfiWhmcs\Ledger\ChargeRepository;
 use EfiWhmcs\Support\CustomerResolver;
 use EfiWhmcs\Support\GatewayLog;
 use EfiWhmcs\Support\Money;
-use WHMCS\Database\Capsule;
 
 /**
  * Regras de negócio do Pix: cobrança imediata + QR code, sempre renderizada inline na página da
@@ -39,7 +38,8 @@ final class PixService
             // `ATIVA` para sempre na Efí, só que não pode mais ser paga. Por isso rastreamos
             // `expires_at` (calculado na emissão) no nosso próprio metadata -- é a ÚNICA forma
             // de detectar a expiração e renovar automaticamente ao reabrir a fatura.
-            if ($existing->status === 'ATIVA' && $this->isExpiredLocally($existing)) {
+            if (($existing->status === 'ATIVA' && $this->isExpiredLocally($existing))
+                || str_starts_with((string) $existing->status, 'REMOVIDA_')) {
                 return $this->regenerate($invoiceId, $totalAmountCents, $customerName, $documentDigitsOnly);
             }
 
@@ -83,6 +83,12 @@ final class PixService
 
         $status = (string) ($detail['status'] ?? $charge->status);
 
+        if ($status === 'CONCLUIDA') {
+            $this->logPaidOutsideBillingCycle($invoiceId, (string) $charge->efi_charge_id, $charge, $detail);
+
+            return "Cobrança Pix {$charge->efi_charge_id} já foi concluída; aguardando reconciliação do pagamento.";
+        }
+
         if ($status !== 'ATIVA') {
             ChargeRepository::updateStatus($charge->id, $status);
 
@@ -118,14 +124,21 @@ final class PixService
         $qr = $this->generateQrCode($locId);
         $expiresAt = $this->expiresAtFromCalendario($detail['calendario'] ?? null)
             ?? (isset($metadata['expires_at']) ? (int) $metadata['expires_at'] : null);
+        $updatedStatus = (string) ($updated['status'] ?? 'ATIVA');
+
+        if ($updatedStatus === 'CONCLUIDA') {
+            $this->logPaidOutsideBillingCycle($invoiceId, (string) $charge->efi_charge_id, $charge, $updated);
+
+            return "Cobrança Pix {$charge->efi_charge_id} foi concluída durante a revisão; aguardando reconciliação do pagamento.";
+        }
 
         ChargeRepository::replacePixCharge(
             $charge->id,
             $charge->efi_charge_id,
             $locId !== '' ? $locId : null,
-            (string) ($updated['status'] ?? 'ATIVA'),
+            $updatedStatus,
             $amountCents,
-            $this->metadata($discountPercent, $qr['qrcode'] ?? null, $expiresAt)
+            $this->metadata($totalAmountCents, $discountPercent, $qr['qrcode'] ?? null, $qr['imagemQrcode'] ?? null, $expiresAt)
         );
 
         return "Valor da cobrança Pix {$charge->efi_charge_id} atualizado para R$ " . number_format($amountCents / 100, 2, ',', '.') . '.';
@@ -159,13 +172,13 @@ final class PixService
             $status = (string) ($detail['status'] ?? $existing->status);
 
             if ($status === 'CONCLUIDA') {
-                ChargeRepository::updateStatus($existing->id, $status);
+                $this->logPaidOutsideBillingCycle($invoiceId, (string) $existing->efi_charge_id, $existing, $detail);
                 throw new \RuntimeException('A cobrança Pix já foi concluída; não é possível gerar uma nova para esta fatura.');
             }
 
             if ($status === 'ATIVA') {
                 try {
-                    $this->api->pixUpdateCharge(
+                    $removed = $this->api->pixUpdateCharge(
                         ['txid' => $existing->efi_charge_id],
                         ['status' => 'REMOVIDA_PELO_USUARIO_RECEBEDOR']
                     );
@@ -179,13 +192,17 @@ final class PixService
                     throw new \RuntimeException('Não foi possível desativar a cobrança Pix atual: ' . $e->errorDescription);
                 }
 
-                $status = 'REMOVIDA_PELO_USUARIO_RECEBEDOR';
+                $status = (string) ($removed['status'] ?? 'REMOVIDA_PELO_USUARIO_RECEBEDOR');
+                if ($status === 'CONCLUIDA') {
+                    $this->logPaidOutsideBillingCycle($invoiceId, (string) $existing->efi_charge_id, $existing, $removed);
+                    throw new \RuntimeException('A cobrança Pix foi concluída durante a renovação; aguardando reconciliação do pagamento.');
+                }
             }
 
             ChargeRepository::updateStatus($existing->id, $status);
         }
 
-        return $this->issue($invoiceId, $totalAmountCents, $customerName, $documentDigitsOnly, $existing);
+        return $this->issue($invoiceId, $totalAmountCents, $customerName, $documentDigitsOnly, true);
     }
 
     private function issue(
@@ -193,7 +210,7 @@ final class PixService
         int $totalAmountCents,
         string $customerName,
         string $documentDigitsOnly,
-        ?object $replacedCharge = null
+        bool $reissue = false
     ): array {
         $discountPercent = (float) ($this->gatewayParams['discount_percent'] ?? 0);
         $finalAmountCents = $this->finalAmountCents($totalAmountCents);
@@ -234,9 +251,9 @@ final class PixService
 
         $status = (string) ($charge['status'] ?? 'ATIVA');
         $expiresAt = $this->expiresAtFromCalendario($charge['calendario'] ?? null);
-        $metadata = $this->metadata($discountPercent, $qr['qrcode'] ?? null, $expiresAt);
+        $metadata = $this->metadata($totalAmountCents, $discountPercent, $qr['qrcode'] ?? null, $qr['imagemQrcode'] ?? null, $expiresAt);
 
-        if ($replacedCharge === null) {
+        if (!$reissue) {
             $localId = ChargeRepository::create([
                 'invoice_id' => $invoiceId,
                 'rail' => self::RAIL,
@@ -247,15 +264,13 @@ final class PixService
                 'metadata' => $metadata,
             ]);
         } else {
-            $localId = (int) $replacedCharge->id;
-            ChargeRepository::replacePixCharge(
-                $localId,
-                $txid,
-                $locId !== '' ? $locId : null,
-                $status,
-                $finalAmountCents,
-                $metadata
-            );
+            $localId = ChargeRepository::reissue($invoiceId, self::RAIL, [
+                'efi_charge_id' => $txid,
+                'efi_loc_id' => $locId !== '' ? $locId : null,
+                'status' => $status,
+                'amount_cents' => $finalAmountCents,
+                'metadata' => $metadata,
+            ]);
         }
 
         GatewayLog::debug('efi_pix', $this->gatewayParams, 'Cobrança Pix criada', $charge);
@@ -315,11 +330,13 @@ final class PixService
         return number_format($amountCents / 100, 2, '.', '');
     }
 
-    private function metadata(float $discountPercent, ?string $copyPaste, ?int $expiresAt = null): string
+    private function metadata(int $baseAmountCents, float $discountPercent, ?string $copyPaste, ?string $qrImage, ?int $expiresAt = null): string
     {
         return json_encode([
+            'base_amount_cents' => $baseAmountCents,
             'discount_percent' => $discountPercent,
             'copy_paste' => $copyPaste,
+            'qr_image' => $qrImage,
             'expires_at' => $expiresAt,
         ]) ?: '{}';
     }
@@ -362,10 +379,30 @@ final class PixService
      * integral quita a fatura. Idempotente: só chamar uma vez por cobrança (ver callback, que
      * guarda por `charge->status`); chamar de novo duplicaria o desconto.
      */
-    public function applyDiscountLineItem(int $invoiceId, int $chargedAmountCents): void
+    public function applyDiscountLineItem(int $invoiceId, int $receivedAmountCents): void
     {
-        $invoiceTotalCents = Money::toCents((float) (Capsule::table('tblinvoices')->where('id', $invoiceId)->value('total') ?? 0));
-        $discountCents = $invoiceTotalCents - $chargedAmountCents;
+        $charge = ChargeRepository::findByInvoiceAndRail($invoiceId, self::RAIL);
+
+        if ($charge === null) {
+            GatewayLog::error('efi_pix', $this->gatewayParams, 'Pagamento Pix sem cobrança local para calcular desconto; revisão manual necessária', [
+                'invoice_id' => $invoiceId,
+                'received_amount_cents' => $receivedAmountCents,
+            ]);
+            return;
+        }
+
+        $metadata = json_decode((string) $charge->metadata, true) ?: [];
+        $discountCents = self::discountCentsForPayment($metadata, (int) $charge->amount_cents, $receivedAmountCents);
+
+        if ($discountCents === null) {
+            GatewayLog::error('efi_pix', $this->gatewayParams, 'Valor Pix confirmado diverge da cobrança esperada; pagamento será aplicado sem desconto automático', [
+                'invoice_id' => $invoiceId,
+                'charge_id' => $charge->id,
+                'expected_amount_cents' => (int) $charge->amount_cents,
+                'received_amount_cents' => $receivedAmountCents,
+            ]);
+            return;
+        }
 
         if ($discountCents <= 0) {
             return;
@@ -382,6 +419,89 @@ final class PixService
             GatewayLog::error('efi_pix', $this->gatewayParams, 'Falha ao lançar item de desconto Pix na fatura', [
                 'invoice_id' => $invoiceId,
                 'result' => $results,
+            ]);
+        }
+    }
+
+    /**
+     * Returns null when the authoritative received amount does not match the issued charge.
+     * The base is durable issuance metadata, never a later invoice-total subtraction.
+     */
+    public static function discountCentsForPayment(array $metadata, int $expectedAmountCents, int $receivedAmountCents): ?int
+    {
+        if ($receivedAmountCents !== $expectedAmountCents
+            || !isset($metadata['base_amount_cents'], $metadata['discount_percent'])) {
+            return null;
+        }
+
+        $discountPercent = (float) $metadata['discount_percent'];
+        if ($discountPercent <= 0) {
+            return 0;
+        }
+
+        return (int) round((int) $metadata['base_amount_cents'] * $discountPercent / 100);
+    }
+
+    /** The only lifecycle path allowed to persist a confirmed Pix payment is PaymentApplier. */
+    private function logPaidOutsideBillingCycle(int $invoiceId, string $txid, object $charge, array $detail): void
+    {
+        GatewayLog::error('efi_pix', $this->gatewayParams, 'Pix pago em fatura fora do ciclo de cobrança — revisão manual', [
+            'invoice_id' => $invoiceId,
+            'txid' => $txid,
+            'charge_id' => $charge->id,
+            'local_status' => $charge->status,
+            'provider_status' => $detail['status'] ?? null,
+        ]);
+    }
+
+    /** Bacen permits 1–35 alphanumeric chars; the suffix remains intact for large local ids. */
+    public static function refundId(int $chargeId, int $attempt): string
+    {
+        $suffix = 'n' . max(1, $attempt);
+
+        return substr('whmcsrefund' . $chargeId, 0, 35 - strlen($suffix)) . $suffix;
+    }
+
+    /** Cancels only an open local Pix after Efí authoritatively confirms it is still open. */
+    public function cancelInvoiceCharge(int $invoiceId): void
+    {
+        $charge = ChargeRepository::findByInvoiceAndRail($invoiceId, self::RAIL);
+        if ($charge === null || $charge->status !== 'ATIVA') {
+            return;
+        }
+
+        try {
+            $detail = $this->api->pixDetailCharge(['txid' => $charge->efi_charge_id]);
+        } catch (EfiException $e) {
+            GatewayLog::error('efi_pix', $this->gatewayParams, 'Falha ao consultar Pix antes de cancelar (' . $e->code . ')', [
+                'error' => $e->errorDescription, 'invoice' => $invoiceId, 'txid' => $charge->efi_charge_id,
+            ]);
+            return;
+        }
+
+        $status = (string) ($detail['status'] ?? $charge->status);
+        if ($status === 'CONCLUIDA') {
+            $this->logPaidOutsideBillingCycle($invoiceId, (string) $charge->efi_charge_id, $charge, $detail);
+            return;
+        }
+
+        if ($status !== 'ATIVA') {
+            ChargeRepository::updateStatus((int) $charge->id, $status);
+            return;
+        }
+
+        try {
+            // Bacen rejects a removal body carrying any field other than status.
+            $removed = $this->api->pixUpdateCharge(['txid' => $charge->efi_charge_id], ['status' => 'REMOVIDA_PELO_USUARIO_RECEBEDOR']);
+            $removedStatus = (string) ($removed['status'] ?? 'REMOVIDA_PELO_USUARIO_RECEBEDOR');
+            if ($removedStatus === 'CONCLUIDA') {
+                $this->logPaidOutsideBillingCycle($invoiceId, (string) $charge->efi_charge_id, $charge, $removed);
+                return;
+            }
+            ChargeRepository::updateStatus((int) $charge->id, $removedStatus);
+        } catch (EfiException $e) {
+            GatewayLog::error('efi_pix', $this->gatewayParams, 'Falha ao cancelar cobrança Pix (' . $e->code . ')', [
+                'error' => $e->errorDescription, 'invoice' => $invoiceId, 'txid' => $charge->efi_charge_id,
             ]);
         }
     }

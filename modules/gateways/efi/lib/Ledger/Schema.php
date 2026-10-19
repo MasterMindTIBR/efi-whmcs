@@ -24,6 +24,7 @@ final class Schema
         self::ensureEvents();
         self::migrate(1, [self::class, 'migrateInsertOnlyCharges']);
         self::migrate(2, [self::class, 'migrateEventLifecycle']);
+        self::migrate(3, [self::class, 'migratePixRemovalStatuses']);
         self::$ensured = true;
     }
 
@@ -151,5 +152,15 @@ final class Schema
             }
         }
         try { $schema->table('mod_efi_events', function ($table) { $table->index(['status', 'received_at'], 'idx_efi_event_pending'); }); } catch (\Throwable) {}
+    }
+
+    /** Old installations may still have the pre-Rock-1 MySQL enum. */
+    private static function migratePixRemovalStatuses(): void
+    {
+        if (Capsule::connection()->getDriverName() !== 'mysql') {
+            return;
+        }
+
+        Capsule::statement("ALTER TABLE mod_efi_charges MODIFY status VARCHAR(32) NOT NULL DEFAULT 'new'");
     }
 }

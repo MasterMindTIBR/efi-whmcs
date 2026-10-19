@@ -23,6 +23,7 @@ final class WebhookIpAllowlist
     public static function allows(string $remoteAddr, array ...$gatewayParamsList): bool
     {
         $anyEnforced = false;
+        $sourceIp = self::sourceIp($remoteAddr, $gatewayParamsList);
 
         foreach ($gatewayParamsList as $params) {
             if (empty($params['skip_mtls_webhook'])) {
@@ -35,11 +36,50 @@ final class WebhookIpAllowlist
                 explode(',', (string) ($params['efi_webhook_allowed_ips'] ?? self::DEFAULT_IPS))
             ));
 
-            if (in_array($remoteAddr, $allowedIps, true)) {
+            $allowedIps = array_map([self::class, 'normalizeIp'], $allowedIps);
+
+            if (in_array($sourceIp, $allowedIps, true)) {
                 return true;
             }
         }
 
         return !$anyEnforced;
+    }
+
+    /** The callback uses this explicitly so rejected sources are retried by Efí. */
+    public static function responseStatus(bool $allowed): int
+    {
+        return $allowed ? 200 : 403;
+    }
+
+    /** @param array<int, array> $gatewayParamsList */
+    private static function sourceIp(string $remoteAddr, array $gatewayParamsList): string
+    {
+        $remoteAddr = self::normalizeIp($remoteAddr);
+        $trustedProxies = [];
+
+        foreach ($gatewayParamsList as $params) {
+            $trustedProxies = array_merge($trustedProxies, array_filter(array_map(
+                [self::class, 'normalizeIp'],
+                array_map('trim', explode(',', (string) ($params['efi_webhook_trusted_proxies'] ?? '')))
+            )));
+        }
+
+        // An XFF header is useful only when the immediate TCP peer is a configured proxy.
+        if (!in_array($remoteAddr, $trustedProxies, true)) {
+            return $remoteAddr;
+        }
+
+        $forwarded = (string) ($_SERVER['HTTP_X_FORWARDED_FOR'] ?? '');
+        $firstForwarded = trim(explode(',', $forwarded)[0] ?? '');
+
+        return $firstForwarded === '' ? $remoteAddr : self::normalizeIp($firstForwarded);
+    }
+
+    private static function normalizeIp(string $ip): string
+    {
+        $ip = trim($ip);
+
+        return str_starts_with(strtolower($ip), '::ffff:') ? substr($ip, 7) : $ip;
     }
 }

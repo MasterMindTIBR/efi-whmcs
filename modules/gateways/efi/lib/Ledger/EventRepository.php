@@ -59,6 +59,45 @@ final class EventRepository
         Capsule::table('mod_efi_events')->where('id', $eventRowId)->update(['status' => 'applied']);
     }
 
+    /** Counts durable Pix-devolution events used to allocate a distinct refund attempt id. */
+    public static function countByEventKeyPrefix(int $chargeId, string $prefix): int
+    {
+        return (int) Capsule::table('mod_efi_events')->where('charge_id', $chargeId)
+            ->where('efi_event_key', 'like', addcslashes($prefix, '\\%_') . '%')->count();
+    }
+
+    /**
+     * Atomically reserves the next Pix refund attempt. A duplicate-key retry is necessary even
+     * with a count because two WHMCS refund requests can arrive at the same time.
+     */
+    public static function reserveNextDevolutionAttempt(int $chargeId, ?string $statusFrom, ?string $efiChargeId): int
+    {
+        for ($retries = 0; $retries < 10; $retries++) {
+            $attempt = self::countByEventKeyPrefix($chargeId, 'devolucao:') + 1;
+
+            try {
+                Capsule::table('mod_efi_events')->insert([
+                    'charge_id' => $chargeId,
+                    'efi_charge_id' => $efiChargeId,
+                    'efi_event_key' => 'devolucao:tentativa:' . $attempt,
+                    'status_from' => $statusFrom,
+                    'status_to' => 'SOLICITADA',
+                    'status' => 'applied',
+                    'received_at' => date('Y-m-d H:i:s'),
+                ]);
+
+                return $attempt;
+            } catch (\Throwable $e) {
+                $code = (string) $e->getCode();
+                if ($code !== '23000' && $code !== '1062') {
+                    throw $e;
+                }
+            }
+        }
+
+        throw new \RuntimeException('Não foi possível reservar um id único para devolução Pix.');
+    }
+
     /** @return iterable<object> */
     public static function pendingOlderThan(int $minutes): iterable
     {

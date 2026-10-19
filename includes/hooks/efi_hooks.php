@@ -456,8 +456,10 @@ function efi_reconcile_pix($charges): void
                 $metadata['e2e_id'] = $e2eId;
                 $eventId = EfiWhmcs\Ledger\EventRepository::tryClaim((int) $charge->id, 'reconcile:' . $e2eId, $charge->status, 'CONCLUIDA', $charge->efi_charge_id);
                 if ($eventId !== null) {
+                    $receivedAmountCents = (int) round(((float) $recebido['valor']) * 100);
+                    (new EfiWhmcs\Pix\PixService($api, $gatewayParams))->applyDiscountLineItem((int) $charge->invoice_id, $receivedAmountCents);
                     PaymentApplier::apply([
-                        'invoiceId' => (int) $charge->invoice_id, 'transId' => $e2eId, 'amountCents' => (int) round(((float) $recebido['valor']) * 100),
+                        'invoiceId' => (int) $charge->invoice_id, 'transId' => $e2eId, 'amountCents' => $receivedAmountCents,
                         'module' => 'efi_pix', 'gatewayParams' => $gatewayParams, 'eventId' => $eventId,
                         'markPaid' => static function () use ($charge, $metadata): void { EfiWhmcs\Ledger\ChargeRepository::updateMetadata((int) $charge->id, json_encode($metadata) ?: '{}'); EfiWhmcs\Ledger\ChargeRepository::updateStatus((int) $charge->id, 'CONCLUIDA'); },
                     ]);
@@ -643,15 +645,14 @@ add_hook('AdminAreaFooterOutput', 1, function ($vars) {
 });
 
 /**
- * Expõe campos de merge `{$efi_boleto_link}` / `{$efi_boleto_barcode}` /
- * `{$efi_pix_copiaecola}` para uso manual nos modelos de email (Fatura Criada, Lembretes de
+ * Expõe campos de merge de boleto/Pix para uso manual nos modelos de email (Fatura Criada, Lembretes de
  * Pagamento, etc.) -- ver README para instruções de uso no template.
  */
-add_hook('EmailTplMergeFields', 1, function ($vars) {
+add_hook('EmailPreSend', 1, function ($vars) {
     $relId = (int) ($vars['relid'] ?? 0);
-    $relType = (string) ($vars['reltype'] ?? '');
 
-    if ($relId <= 0 || $relType !== 'Invoice') {
+    if ($relId <= 0 || !isset($vars['messagename'])
+        || !Capsule::table('tblinvoices')->where('id', $relId)->exists()) {
         return [];
     }
 
@@ -668,9 +669,16 @@ add_hook('EmailTplMergeFields', 1, function ($vars) {
 
     $pix = EfiWhmcs\Ledger\ChargeRepository::findByInvoiceAndRail($relId, 'pix');
 
-    if ($pix !== null && $pix->status !== 'CONCLUIDA') {
+    if ($pix !== null && $pix->status === 'ATIVA') {
         $metadata = json_decode((string) $pix->metadata, true) ?: [];
-        $merge['efi_pix_copiaecola'] = $metadata['copy_paste'] ?? '';
+        $expiresAt = isset($metadata['expires_at']) ? (int) $metadata['expires_at'] : null;
+        if ($expiresAt === null || $expiresAt > time()) {
+            $pixParams = efi_gateway_variables('efi_pix') ?? [];
+            $systemUrl = rtrim((string) ($vars['systemurl'] ?? $pixParams['systemurl'] ?? ''), '/');
+            $merge['efi_pix_qrcode'] = $metadata['qr_image'] ?? '';
+            $merge['efi_pix_copiaecola'] = $metadata['copy_paste'] ?? '';
+            $merge['efi_pix_link'] = $systemUrl !== '' ? $systemUrl . '/viewinvoice.php?id=' . $relId : '';
+        }
     }
 
     return $merge;

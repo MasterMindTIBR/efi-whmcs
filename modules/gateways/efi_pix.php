@@ -9,6 +9,7 @@
 
 use EfiWhmcs\Config\ConfigSchema;
 use EfiWhmcs\Ledger\Schema as EfiSchema;
+use EfiWhmcs\Ledger\EventRepository;
 use EfiWhmcs\Pix\PixService;
 use EfiWhmcs\Support\Crypto;
 use EfiWhmcs\Support\CustomerResolver;
@@ -65,6 +66,13 @@ function efi_pix_config()
             'Size' => '60',
             'Default' => '34.193.116.226',
             'Description' => 'Só é checado quando "Pular verificação mTLS" acima está ativo. Lista separada por vírgula dos IPs de origem aceitos para o webhook; o valor padrão é o IP documentado hoje pela Efí (pode mudar -- ver a doc oficial de Webhooks Pix se as notificações pararem de chegar).',
+        ],
+        'efi_webhook_trusted_proxies' => [
+            'FriendlyName' => 'Proxies confiáveis do webhook Pix',
+            'Type' => 'text',
+            'Size' => '60',
+            'Default' => '',
+            'Description' => 'Lista separada por vírgula de proxies reversos confiáveis. Somente quando REMOTE_ADDR estiver nesta lista o primeiro X-Forwarded-For será usado como IP de origem; vazio mantém REMOTE_ADDR diretamente.',
         ],
         'expiration_days' => [
             'FriendlyName' => 'Validade da cobrança (dias)',
@@ -229,11 +237,14 @@ function efi_pix_refund($params)
     try {
         $api = EfiClientFactory::make($params, true);
 
-        // Id de devolução: só alfanumérico, 1-35 chars (regra do Bacen) e DETERMINÍSTICO a
-        // partir do charge local -- se o WHMCS re-chamar refund() (timeout, retry manual),
-        // reenvia o MESMO id, que a Efí trata como a mesma devolução em vez de criar um novo
-        // estorno duplicado. `uniqid(..., true)` antigo gerava `_` e `.`, rejeitado pela Efí.
-        $devolutionId = substr('whmcsrefund' . $charge->id, 0, 35);
+        // Bacen accepts each devolution id only once. Reserve an attempt in the shared event
+        // ledger before calling Efí so a retry after an uncertain network outcome also advances.
+        $attempt = EventRepository::reserveNextDevolutionAttempt(
+            (int) $charge->id,
+            (string) $charge->status,
+            (string) $charge->efi_charge_id
+        );
+        $devolutionId = PixService::refundId((int) $charge->id, $attempt);
 
         $response = $api->pixDevolution(
             ['e2eId' => $e2eId, 'id' => $devolutionId],

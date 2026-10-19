@@ -43,8 +43,8 @@ $remoteAddr = (string) ($_SERVER['REMOTE_ADDR'] ?? '');
 
 if (!WebhookIpAllowlist::allows($remoteAddr, $gatewayParams)) {
     GatewayLog::error($gatewayModuleName, $gatewayParams, 'Webhook Pix Automático rejeitado: IP de origem fora da lista permitida (mTLS pulado)', ['ip' => $remoteAddr]);
-    http_response_code(200);
-    echo '200';
+    http_response_code(WebhookIpAllowlist::responseStatus(false));
+    echo '403';
     exit;
 }
 
