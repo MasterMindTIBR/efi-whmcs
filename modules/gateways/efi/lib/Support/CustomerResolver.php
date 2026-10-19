@@ -40,6 +40,45 @@ final class CustomerResolver
         return $document !== '' ? $document : null;
     }
 
+    /**
+     * Grava o CPF/CNPJ digitado no formulário de volta no Campo Personalizado, para que a
+     * recorrência automática (`_capture`), que só lê o campo e nunca recebe entrada do
+     * cliente, encontre o documento em cobranças futuras da mesma fatura/cliente.
+     */
+    public static function saveDocumentToCustomField(int $clientId, ?string $fieldName, string $digitsOnly): void
+    {
+        if ($clientId <= 0 || $fieldName === null || trim($fieldName) === '') {
+            return;
+        }
+
+        $fieldId = Capsule::table('tblcustomfields')
+            ->where('fieldname', trim($fieldName))
+            ->where('type', 'client')
+            ->value('id');
+
+        if ($fieldId === null) {
+            return;
+        }
+
+        $exists = Capsule::table('tblcustomfieldsvalues')
+            ->where('fieldid', $fieldId)
+            ->where('relid', $clientId)
+            ->exists();
+
+        if ($exists) {
+            Capsule::table('tblcustomfieldsvalues')
+                ->where('fieldid', $fieldId)
+                ->where('relid', $clientId)
+                ->update(['value' => $digitsOnly]);
+        } else {
+            Capsule::table('tblcustomfieldsvalues')->insert([
+                'fieldid' => $fieldId,
+                'relid' => $clientId,
+                'value' => $digitsOnly,
+            ]);
+        }
+    }
+
     public static function onlyDigits(string $value): string
     {
         return preg_replace('/\D+/', '', $value) ?? '';

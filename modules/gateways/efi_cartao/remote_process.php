@@ -16,7 +16,9 @@ use EfiWhmcs\Support\CustomerResolver;
 use EfiWhmcs\Support\EfiClientFactory;
 use EfiWhmcs\Support\GatewayLoader;
 use EfiWhmcs\Support\GatewayLog;
+use EfiWhmcs\Support\InvoiceBalance;
 use EfiWhmcs\Support\Money;
+use EfiWhmcs\Support\PaymentApplier;
 use WHMCS\Database\Capsule;
 
 App::load_function('invoice');
@@ -88,11 +90,6 @@ try {
     $service = new CardService($api, $gatewayParams);
 
     if ($invoiceId > 0) {
-        // Confere que a fatura pertence de fato a este cliente antes de cobrar. O valor
-        // cobrado é SEMPRE calculado aqui a partir do total da fatura no banco -- nunca a
-        // partir de `amount_cents` enviado pelo cliente, que poderia cobrar R$0,01 no cartão e
-        // ainda assim mandar o WHMCS marcar a fatura inteira como paga (addInvoicePayment com
-        // valor 0 = saldo total).
         $invoice = Capsule::table('tblinvoices')->where('id', $invoiceId)->where('userid', $clientId)->first();
 
         if ($invoice === null) {
@@ -103,20 +100,27 @@ try {
             efi_cartao_process_fail('Esta fatura não está mais em aberto.', 409);
         }
 
-        // Protege contra reenvio (duplo clique, retry de rede, back+resubmit): busca a
-        // cobrança já registrada no ledger local para esta fatura (equivalente ao custom_id
-        // `whmcs_invoice_{id}` gravado na metadata da cobrança) ANTES de chamar a Efí de novo.
-        // 'waiting' significa que uma cobrança já está em análise/3DS assíncrono -- recobrar
-        // geraria uma SEGUNDA transação real no cartão do cliente; 'approved'/'paid' significa
-        // que já foi concluída. Qualquer outro status (recusada, erro, cancelada) permite nova
-        // tentativa normalmente.
+        $currencyCode = Capsule::table('tblcurrencies')->where('id', $invoice->currency)->value('code');
+        if ($currencyCode !== null && strtoupper((string) $currencyCode) !== 'BRL') {
+            // A API da Efí cobra sempre em BRL; este módulo nunca converteu moeda. Falhar
+            // explicitamente é mais seguro que cobrar o valor numérico errado em outra moeda.
+            efi_cartao_process_fail('Este gateway só processa cobranças em Real (BRL).', 422);
+        }
+
+        // Protege contra reenvio (duplo clique, retry de rede, back+resubmit) olhando o ledger
+        // ANTES de chamar a Efí; a trava de verdade contra a corrida (duas abas simultâneas)
+        // é o GET_LOCK por fatura dentro de CardService::chargeWithToken -- esta checagem aqui
+        // só evita uma chamada à API desnecessária no caso comum (não concorrente).
         $existingCharge = ChargeRepository::findByInvoiceAndRail($invoiceId, CardService::RAIL);
 
-        if ($existingCharge !== null && in_array($existingCharge->status, ['waiting', 'approved', 'paid'], true)) {
+        if ($existingCharge !== null && in_array($existingCharge->status, ['creating', 'waiting', 'approved', 'paid', 'unknown', 'failed-unknown'], true)) {
             efi_cartao_process_fail('Já existe uma cobrança de cartão em andamento ou concluída para esta fatura.', 409);
         }
 
-        $amountCents = Money::toCents((float) $invoice->total);
+        // Valor SEMPRE calculado aqui a partir do SALDO da fatura -- nunca do total nem de
+        // algo enviado pelo cliente. Uma fatura com pagamento parcial anterior cobra só o
+        // restante; isso também evita cobrar de novo um valor já quitado por outro meio.
+        $amountCents = InvoiceBalance::centsDue($invoiceId);
 
         // 3D Secure NÃO está implementado: exigiria um passo de fingerprint adicional da Efí no
         // navegador (gera o `tds_identifier`) e uma página pública de retorno de challenge
@@ -133,7 +137,8 @@ try {
             $clientDetails->email,
             $phoneNumber,
             $tdsInfo,
-            min($installments, (int) ($gatewayParams['max_installments'] ?? 1))
+            min($installments, (int) ($gatewayParams['max_installments'] ?? 1)),
+            $clientDetails->companyname ?? null
         );
 
         logTransaction('efi_cartao', [
@@ -150,11 +155,21 @@ try {
         }
 
         if (in_array($result['status'], ['approved', 'paid'], true)) {
-            checkCbTransID($result['transid']);
-            addInvoicePayment($invoiceId, $result['transid'], Money::toReais($amountCents), 0, 'efi_cartao');
+            PaymentApplier::apply([
+                'invoiceId' => $invoiceId,
+                'transId' => (string) $result['transid'],
+                'amountCents' => $amountCents,
+                'module' => 'efi_cartao',
+                'gatewayParams' => $gatewayParams,
+                'chargeId' => (int) $result['local_id'],
+            ]);
         }
         // status 'waiting' (ex.: análise/3DS assíncrono): pagamento será aplicado pelo
         // callback/efi_cartao.php quando a notificação de confirmação chegar.
+
+        // Grava o documento digitado no Campo Personalizado para que a recorrência automática
+        // (_capture, que só lê o campo e nunca recebe entrada do cliente) o encontre depois.
+        CustomerResolver::saveDocumentToCustomField($clientId, $gatewayParams['document_field_name'] ?? null, $documentDigits);
     }
 
     if ($saveCard) {
@@ -178,5 +193,5 @@ try {
     echo json_encode(['success' => true]);
 } catch (\Throwable $e) {
     GatewayLog::error('efi_cartao', $gatewayParams, 'Falha ao processar cartão (remote_process)', $e->getMessage());
-    efi_cartao_process_fail('Erro ao processar pagamento: ' . $e->getMessage(), 500);
+    efi_cartao_process_fail('Não foi possível processar o pagamento. Tente novamente em instantes ou contate o suporte.', 500);
 }

@@ -244,6 +244,16 @@ function efi_cartao_capture($params)
         return ['status' => 'error', 'rawdata' => 'Telefone brasileiro válido do cliente não encontrado; recorrência automática não pode prosseguir sem telefone.'];
     }
 
+    $existingCharge = ChargeRepository::findByInvoiceAndRail((int) $params['invoiceid'], CardService::RAIL);
+
+    // Mesma proteção contra reenvio que o checkout síncrono já tem (remote_process.php): o
+    // próprio WHMCS pode disparar `_capture` mais de uma vez para a mesma fatura (cron de
+    // cobrança automática + clique manual em "Tentar Capturar Pagamento" concorrentes), e
+    // nada aqui impedia uma segunda cobrança real no cartão do cliente.
+    if ($existingCharge !== null && in_array($existingCharge->status, ['creating', 'waiting', 'approved', 'paid', 'unknown', 'failed-unknown'], true)) {
+        return ['status' => 'error', 'rawdata' => 'Já existe uma cobrança de cartão em andamento ou concluída para esta fatura.'];
+    }
+
     $api = EfiClientFactory::make($params);
     $service = new CardService($api, $params);
 
@@ -258,7 +268,9 @@ function efi_cartao_capture($params)
         $documentDigits,
         $params['clientdetails']['email'] ?? null,
         $phoneNumber,
-        null
+        null,
+        1,
+        $params['clientdetails']['companyname'] ?? null
     );
 
     return efi_cartao_map_result($result, $gatewayId);
@@ -266,17 +278,25 @@ function efi_cartao_capture($params)
 
 function efi_cartao_refund($params)
 {
-    $charge = ChargeRepository::findByInvoiceAndRail((int) $params['invoiceid'], CardService::RAIL);
+    $transId = trim((string) ($params['transid'] ?? ''));
 
-    if ($charge === null) {
-        return ['status' => 'error', 'rawdata' => 'Cobrança de cartão não encontrada no ledger local para esta fatura.'];
+    if ($transId === '') {
+        return ['status' => 'error', 'rawdata' => 'transid ausente na solicitação de estorno.'];
     }
 
+    $charge = ChargeRepository::findByEfiChargeId($transId);
+
+    if ($charge === null || $charge->rail !== CardService::RAIL) {
+        return ['status' => 'error', 'rawdata' => 'Cobrança de cartão não encontrada no ledger local para este transid.'];
+    }
+
+    $amountCents = Money::toCents($params['amount']);
     $api = EfiClientFactory::make($params);
-    $result = (new CardService($api, $params))->refund($charge->efi_charge_id, Money::toCents($params['amount']));
+    $result = (new CardService($api, $params))->refund($charge->efi_charge_id, $amountCents);
 
     if ($result['status'] === 'success') {
-        ChargeRepository::updateStatus($charge->id, 'refunded');
+        $isFullRefund = $amountCents >= (int) $charge->amount_cents;
+        ChargeRepository::updateStatus($charge->id, $isFullRefund ? 'refunded' : 'partially_refunded');
     }
 
     return [
