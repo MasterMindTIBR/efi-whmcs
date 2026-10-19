@@ -1,100 +1,62 @@
 <?php
 
+declare(strict_types=1);
+
 namespace EfiWhmcs\Ledger;
 
 use WHMCS\Database\Capsule;
 
-/**
- * Fonte única de verdade sobre "qual cobrança Efí pertence a qual fatura WHMCS, e de que tipo
- * (boleto/pix/cartão)". Substitui o proxy frágil do módulo antigo de olhar a última transação
- * WHMCS do invoice.
- */
 final class ChargeRepository
 {
+    private const ACTIVE_STATUSES = ['new', 'waiting', 'unpaid', 'ATIVA', 'creating', 'approved', 'unknown', 'failed-unknown'];
+
     public static function findByInvoiceAndRail(int $invoiceId, string $rail): ?object
     {
-        Schema::ensure();
-
-        return Capsule::table('mod_efi_charges')
-            ->where('invoice_id', $invoiceId)
-            ->where('rail', $rail)
-            ->first();
+        return Capsule::table('mod_efi_charges')->where('invoice_id', $invoiceId)->where('rail', $rail)
+            ->whereIn('status', self::ACTIVE_STATUSES)->orderByDesc('id')->first();
     }
 
     public static function findByEfiChargeId(string $efiChargeId): ?object
     {
-        Schema::ensure();
-
-        return Capsule::table('mod_efi_charges')
-            ->where('efi_charge_id', $efiChargeId)
-            ->first();
+        return Capsule::table('mod_efi_charges')->where('efi_charge_id', $efiChargeId)->first();
     }
 
     public static function create(array $attributes): int
     {
-        Schema::ensure();
-
         $now = date('Y-m-d H:i:s');
-
-        return Capsule::table('mod_efi_charges')->insertGetId(array_merge($attributes, [
-            'created_at' => $now,
-            'updated_at' => $now,
-        ]));
+        return (int) Capsule::table('mod_efi_charges')->insertGetId($attributes + ['created_at' => $now, 'updated_at' => $now]);
     }
 
-    /**
-     * Cria a cobrança da fatura/trilho, ou atualiza a já existente (ver `UNIQUE(invoice_id,
-     * rail)` em `Schema`) -- necessário para reemitir um boleto depois de cancelado: um segundo
-     * `create()` para o mesmo par violaria a constraint, deixando a reemissão travada mesmo
-     * sendo exatamente o caso que `issueOrFetch()` pretende cobrir.
-     */
-    public static function upsert(int $invoiceId, string $rail, array $attributes): int
+    /** Supersedes the preceding unresolved issuance and inserts an immutable new one. */
+    public static function reissue(int $invoiceId, string $rail, array $attributes): int
     {
-        Schema::ensure();
-
-        $now = date('Y-m-d H:i:s');
-        $existing = Capsule::table('mod_efi_charges')->where('invoice_id', $invoiceId)->where('rail', $rail)->first();
-
-        if ($existing !== null) {
-            Capsule::table('mod_efi_charges')->where('id', $existing->id)->update($attributes + ['updated_at' => $now]);
-
-            return (int) $existing->id;
+        $old = self::findByInvoiceAndRail($invoiceId, $rail);
+        $newId = self::create($attributes + ['invoice_id' => $invoiceId, 'rail' => $rail]);
+        if ($old !== null) {
+            Capsule::table('mod_efi_charges')->where('id', $old->id)->update(['status' => 'superseded', 'superseded_by' => $newId, 'updated_at' => date('Y-m-d H:i:s')]);
         }
+        return $newId;
+    }
 
-        return Capsule::table('mod_efi_charges')->insertGetId($attributes + [
-            'invoice_id' => $invoiceId,
-            'rail' => $rail,
-            'created_at' => $now,
-            'updated_at' => $now,
-        ]);
+    /** Caller holds the named invoice lock before reserving provider issuance. */
+    public static function reserveCreating(int $invoiceId, string $rail, int $amountCents): int
+    {
+        return self::reissue($invoiceId, $rail, ['status' => 'creating', 'amount_cents' => $amountCents]);
     }
 
     public static function updateStatus(int $id, string $status, ?string $efiChargeId = null): void
     {
-        Schema::ensure();
-
-        $update = [
-            'status' => $status,
-            'updated_at' => date('Y-m-d H:i:s'),
-        ];
-
-        if ($efiChargeId !== null) {
-            $update['efi_charge_id'] = $efiChargeId;
-        }
-
+        $update = ['status' => $status, 'updated_at' => date('Y-m-d H:i:s')];
+        if ($efiChargeId !== null) { $update['efi_charge_id'] = $efiChargeId; }
         Capsule::table('mod_efi_charges')->where('id', $id)->update($update);
     }
 
     public static function updateLocId(int $id, string $locId): void
     {
-        Schema::ensure();
-
-        Capsule::table('mod_efi_charges')->where('id', $id)->update([
-            'efi_loc_id' => $locId,
-            'updated_at' => date('Y-m-d H:i:s'),
-        ]);
+        Capsule::table('mod_efi_charges')->where('id', $id)->update(['efi_loc_id' => $locId, 'updated_at' => date('Y-m-d H:i:s')]);
     }
 
+    /** Updates all mutable facts for a Pix charge whose provider identifier is unchanged. */
     public static function replacePixCharge(
         int $id,
         string $efiChargeId,
@@ -103,8 +65,6 @@ final class ChargeRepository
         int $amountCents,
         string $metadata
     ): void {
-        Schema::ensure();
-
         Capsule::table('mod_efi_charges')->where('id', $id)->update([
             'efi_charge_id' => $efiChargeId,
             'efi_loc_id' => $efiLocId,
@@ -115,13 +75,15 @@ final class ChargeRepository
         ]);
     }
 
+    /** Updates facts for the same external charge; a new provider id must use reissue(). */
+    public static function updateCharge(int $id, array $attributes): void
+    {
+        unset($attributes['efi_charge_id']);
+        Capsule::table('mod_efi_charges')->where('id', $id)->update($attributes + ['updated_at' => date('Y-m-d H:i:s')]);
+    }
+
     public static function updateMetadata(int $id, string $metadata): void
     {
-        Schema::ensure();
-
-        Capsule::table('mod_efi_charges')->where('id', $id)->update([
-            'metadata' => $metadata,
-            'updated_at' => date('Y-m-d H:i:s'),
-        ]);
+        Capsule::table('mod_efi_charges')->where('id', $id)->update(['metadata' => $metadata, 'updated_at' => date('Y-m-d H:i:s')]);
     }
 }

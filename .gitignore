@@ -8,6 +8,10 @@ Thumbs.db
 
 # vendor/ é commitado propositalmente (facilita instalação sem Composer no servidor).
 
+# Dependências e cache da suíte dev-only; nunca entram no pacote de release.
+/tests/vendor/
+/tests/.phpunit.result.cache
+
 # Cache de token do SDK da Efí (arquivos gerados em runtime; ver EfiClientFactory::redirectSdkCache).
 /modules/gateways/efi/storage/sdk-cache/*
 !/modules/gateways/efi/storage/sdk-cache/.gitkeep

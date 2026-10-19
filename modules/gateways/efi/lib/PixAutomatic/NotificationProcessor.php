@@ -51,11 +51,12 @@ final class NotificationProcessor
                 continue;
             }
 
-            if (!Repository::tryClaimEvent('recurrence', (int) $recurrence->id, 'initial:' . $e2eId, $recurrence->status, 'INITIAL_PAID')) {
+            $eventId = Repository::tryClaimEvent('recurrence', (int) $recurrence->id, 'initial:' . $e2eId, $recurrence->status, 'INITIAL_PAID');
+            if (!$eventId) {
                 continue;
             }
 
-            $transitions[] = ['recurrence' => $recurrence, 'e2eId' => $e2eId, 'amountCents' => (int) $recurrence->amount_cents];
+            $transitions[] = ['recurrence' => $recurrence, 'e2eId' => $e2eId, 'amountCents' => (int) $recurrence->amount_cents, 'eventId' => $eventId];
         }
 
         return $transitions;
@@ -82,11 +83,13 @@ final class NotificationProcessor
 
             $status = (string) ($detail['status'] ?? $recurrence->status);
             $eventKey = $this->lastUpdateKey($detail['atualizacao'] ?? [], $status);
-            if (!Repository::tryClaimEvent('recurrence', (int) $recurrence->id, $eventKey, $recurrence->status, $status)) {
+            $eventId = Repository::tryClaimEvent('recurrence', (int) $recurrence->id, $eventKey, $recurrence->status, $status);
+            if (!$eventId) {
                 continue;
             }
 
             Repository::updateRecurrence((int) $recurrence->id, ['status' => $status]);
+            Repository::markEventApplied($eventId);
             $recurrence->status = $status;
             $transitions[] = $recurrence;
         }
@@ -119,12 +122,12 @@ final class NotificationProcessor
 
             $attempt = $this->settledAttempt($detail['tentativas'] ?? []);
             $e2eId = (string) ($attempt['endToEndId'] ?? '');
-            if ($e2eId === '' || !Repository::tryClaimEvent('charge', (int) $charge->id, $e2eId, $charge->status, $status)) {
+            $eventId = $e2eId === '' ? null : Repository::tryClaimEvent('charge', (int) $charge->id, $e2eId, $charge->status, $status);
+            if (!$eventId) {
                 continue;
             }
 
-            Repository::updateCharge((int) $charge->id, ['status' => $status]);
-            $transitions[] = ['charge' => $charge, 'e2eId' => $e2eId, 'amountCents' => (int) $charge->amount_cents];
+            $transitions[] = ['charge' => $charge, 'e2eId' => $e2eId, 'amountCents' => (int) $charge->amount_cents, 'eventId' => $eventId];
         }
 
         return $transitions;

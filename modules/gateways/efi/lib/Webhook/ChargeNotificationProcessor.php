@@ -73,7 +73,7 @@ final class ChargeNotificationProcessor
                 continue;
             }
 
-            $claimed = EventRepository::tryClaim($charge->id, (string) $eventId, $statusFrom, $statusTo);
+            $claimed = EventRepository::tryClaim($charge->id, (string) $eventId, $statusFrom, $statusTo, $chargeId);
 
             if (!$claimed) {
                 // Já processado antes -- reentrega segura, no-op.
@@ -82,6 +82,7 @@ final class ChargeNotificationProcessor
 
             $transitions[] = [
                 'charge' => $charge,
+                'eventId' => $claimed,
                 'from' => $statusFrom,
                 'to' => $statusTo,
                 'valueCents' => isset($event['value']) ? (int) $event['value'] : null,

@@ -15,7 +15,7 @@ use EfiWhmcs\PixAutomatic\Repository;
 use EfiWhmcs\Support\EfiClientFactory;
 use EfiWhmcs\Support\GatewayLoader;
 use EfiWhmcs\Support\GatewayLog;
-use EfiWhmcs\Support\Money;
+use EfiWhmcs\Support\PaymentApplier;
 use EfiWhmcs\Support\WebhookIpAllowlist;
 use WHMCS\Database\Capsule;
 
@@ -92,12 +92,12 @@ foreach ($recurrences as $recurrence) {
 foreach ($charges as $transition) {
     $charge = $transition['charge'];
     $e2eId = $transition['e2eId'];
-    $invoiceId = checkCbInvoiceID((int) $charge->invoice_id, $gatewayModuleName);
-    checkCbTransID($e2eId);
-    addInvoicePayment($invoiceId, $e2eId, Money::toReais($transition['amountCents']), 0, $gatewayModuleName);
-    Repository::updateCharge((int) $charge->id, [
-        'status' => 'CONCLUIDA',
-        'metadata' => json_encode(['e2e_id' => $e2eId]) ?: '{}',
+    $invoiceId = (int) $charge->invoice_id;
+    PaymentApplier::apply([
+        'invoiceId' => $invoiceId, 'transId' => $e2eId, 'amountCents' => (int) $transition['amountCents'],
+        'module' => $gatewayModuleName, 'gatewayParams' => $gatewayParams,
+        'markPaid' => static function () use ($charge, $e2eId): void { Repository::updateCharge((int) $charge->id, ['status' => 'CONCLUIDA', 'metadata' => json_encode(['e2e_id' => $e2eId]) ?: '{}']); },
+        'markApplied' => static function () use ($transition): void { Repository::markEventApplied((int) $transition['eventId']); },
     ]);
     logTransaction($gatewayModuleName, ['invoice_id' => $invoiceId, 'txid' => $charge->efi_charge_id, 'e2eId' => $e2eId], 'Cobrança Pix Automático concluída');
 }

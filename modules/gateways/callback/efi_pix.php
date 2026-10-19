@@ -19,7 +19,7 @@ use EfiWhmcs\PixAutomatic\Repository as PixAutomaticRepository;
 use EfiWhmcs\Support\EfiClientFactory;
 use EfiWhmcs\Support\GatewayLoader;
 use EfiWhmcs\Support\GatewayLog;
-use EfiWhmcs\Support\Money;
+use EfiWhmcs\Support\PaymentApplier;
 use EfiWhmcs\Support\WebhookIpAllowlist;
 use EfiWhmcs\Webhook\PixNotificationProcessor;
 use WHMCS\Database\Capsule;
@@ -78,23 +78,19 @@ if (!empty($pixParams['type'])) {
                 'updated_at' => date('Y-m-d H:i:s'),
             ]);
 
-            // Ledger local e lançamento do desconto SEMPRE primeiro: `checkCbTransID()` do
-            // WHMCS interrompe o script inteiro com `die()` quando acha um transid já
-            // registrado, e sem esta guarda o desconto seria lançado DE NOVO a cada reentrega
-            // da mesma notificação (reduzindo o total da fatura repetidamente).
             $alreadyConcluded = $charge->status === 'CONCLUIDA';
 
             if (!$alreadyConcluded) {
                 (new PixService($api, $pixParams))->applyDiscountLineItem($invoiceId, (int) $transition['valueCents']);
             }
 
-            ChargeRepository::updateStatus($charge->id, 'CONCLUIDA');
-
-            if (!$alreadyConcluded) {
-                $invoiceIdChecked = checkCbInvoiceID($invoiceId, 'efi_pix');
-                checkCbTransID($transition['e2eId']);
-                addInvoicePayment($invoiceIdChecked, $transition['e2eId'], Money::toReais($transition['valueCents']), 0, 'efi_pix');
-            }
+            PaymentApplier::apply([
+                'invoiceId' => $invoiceId, 'transId' => $transition['e2eId'],
+                'amountCents' => (int) $transition['valueCents'], 'module' => 'efi_pix',
+                'gatewayParams' => $pixParams, 'chargeId' => (int) $charge->id,
+                'eventId' => (int) $transition['eventId'],
+                'markPaid' => static function () use ($charge): void { ChargeRepository::updateStatus((int) $charge->id, 'CONCLUIDA'); },
+            ]);
         }
     } catch (\Throwable $e) {
         GatewayLog::error('efi_pix', $pixParams, 'Falha ao processar webhook Pix', $e->getMessage());
@@ -108,9 +104,13 @@ if (!empty($automaticParams['type'])) {
 
         foreach ($transitions as $transition) {
             $recurrence = $transition['recurrence'];
-            $invoiceId = checkCbInvoiceID((int) $recurrence->initial_invoice_id, PixAutomaticService::GATEWAY);
-            checkCbTransID($transition['e2eId']);
-            addInvoicePayment($invoiceId, $transition['e2eId'], Money::toReais($transition['amountCents']), 0, PixAutomaticService::GATEWAY);
+            $invoiceId = (int) $recurrence->initial_invoice_id;
+            PaymentApplier::apply([
+                'invoiceId' => $invoiceId, 'transId' => $transition['e2eId'],
+                'amountCents' => (int) $transition['amountCents'], 'module' => PixAutomaticService::GATEWAY,
+                'gatewayParams' => $automaticParams,
+                'markApplied' => static function () use ($transition): void { PixAutomaticRepository::markEventApplied((int) $transition['eventId']); },
+            ]);
 
             $metadata = json_decode((string) $recurrence->metadata, true) ?: [];
             $metadata['initial_e2e_id'] = $transition['e2eId'];

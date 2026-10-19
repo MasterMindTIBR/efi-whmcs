@@ -74,7 +74,7 @@ final class BoletoService
         $barcode = $billet['barcode'];
         $link = $billet['link'];
 
-        $localId = ChargeRepository::upsert($invoiceId, self::RAIL, [
+        $localId = ChargeRepository::reissue($invoiceId, self::RAIL, [
             'efi_charge_id' => $chargeId,
             'status' => (string) ($data['status'] ?? 'waiting'),
             'amount_cents' => $totalAmountCents,

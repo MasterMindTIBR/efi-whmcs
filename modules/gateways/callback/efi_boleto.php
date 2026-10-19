@@ -17,7 +17,7 @@ use EfiWhmcs\Ledger\ChargeRepository;
 use EfiWhmcs\Support\EfiClientFactory;
 use EfiWhmcs\Support\GatewayLoader;
 use EfiWhmcs\Support\GatewayLog;
-use EfiWhmcs\Support\Money;
+use EfiWhmcs\Support\PaymentApplier;
 use EfiWhmcs\Webhook\ChargeNotificationProcessor;
 
 App::load_function('invoice');
@@ -45,7 +45,7 @@ try {
 } catch (\Throwable $e) {
     GatewayLog::error($gatewayModuleName, $gatewayParams, 'Falha ao processar notificação', $e->getMessage());
     http_response_code(200); // 200 para não entrar em retry-storm por erro de config local
-    die('error: ' . $e->getMessage());
+    die('error');
 }
 
 efi_boleto_apply_transitions($transitions, $gatewayModuleName, $gatewayParams);
@@ -73,27 +73,28 @@ function efi_boleto_apply_transitions(array $transitions, string $gatewayModuleN
         switch ($to) {
             case 'paid':
             case 'settled':
-                $invoiceId = checkCbInvoiceID($invoiceId, $gatewayModuleName);
-                $amount = $transition['valueCents'] !== null
-                    ? Money::toReais($transition['valueCents'])
-                    : 0; // 0 = WHMCS assume o saldo devedor total da fatura
-
-                checkCbTransID($charge->efi_charge_id);
-                addInvoicePayment($invoiceId, $charge->efi_charge_id, $amount, 0, $gatewayModuleName);
-                ChargeRepository::updateStatus($charge->id, 'paid');
+                PaymentApplier::apply([
+                    'invoiceId' => $invoiceId, 'transId' => (string) $charge->efi_charge_id,
+                    'amountCents' => $transition['valueCents'] ?? (int) $charge->amount_cents,
+                    'module' => $gatewayModuleName, 'gatewayParams' => $gatewayParams,
+                    'chargeId' => (int) $charge->id, 'eventId' => (int) $transition['eventId'],
+                ]);
                 break;
 
             case 'unpaid':
                 ChargeRepository::updateStatus($charge->id, 'unpaid');
+                \EfiWhmcs\Ledger\EventRepository::markApplied((int) $transition['eventId']);
                 break;
 
             case 'canceled':
             case 'expired':
                 ChargeRepository::updateStatus($charge->id, $to);
+                \EfiWhmcs\Ledger\EventRepository::markApplied((int) $transition['eventId']);
                 break;
 
             default:
                 ChargeRepository::updateStatus($charge->id, $to);
+                \EfiWhmcs\Ledger\EventRepository::markApplied((int) $transition['eventId']);
         }
     }
 }

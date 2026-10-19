@@ -46,3 +46,8 @@ if ($invoiceId <= 0) {
 }
 
 $results = localAPI('CapturePayment', ['invoiceid' => $invoiceId], $adminUsername);
+
+echo json_encode([
+    'success' => ($results['result'] ?? '') === 'success',
+    'message' => $results['message'] ?? (($results['result'] ?? '') === 'success' ? 'Captura solicitada com sucesso.' : 'Falha ao solicitar captura.'),
+]);

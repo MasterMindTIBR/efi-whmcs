@@ -16,7 +16,7 @@ use EfiWhmcs\Ledger\ChargeRepository;
 use EfiWhmcs\Support\EfiClientFactory;
 use EfiWhmcs\Support\GatewayLoader;
 use EfiWhmcs\Support\GatewayLog;
-use EfiWhmcs\Support\Money;
+use EfiWhmcs\Support\PaymentApplier;
 use EfiWhmcs\Webhook\ChargeNotificationProcessor;
 
 App::load_function('invoice');
@@ -44,7 +44,7 @@ try {
 } catch (\Throwable $e) {
     GatewayLog::error($gatewayModuleName, $gatewayParams, 'Falha ao processar notificação de cartão', $e->getMessage());
     http_response_code(200);
-    die('error: ' . $e->getMessage());
+    die('error');
 }
 
 foreach ($transitions as $transition) {
@@ -59,26 +59,18 @@ foreach ($transitions as $transition) {
         'to' => $to,
     ], 'Notificação de cartão: ' . $to);
 
-    // O ledger local é atualizado SEMPRE primeiro: `checkCbTransID()` do WHMCS interrompe o
-    // script inteiro com `die()` quando encontra um transid já registrado (ex.: esta cobrança
-    // já foi creditada de forma síncrona por remote_process.php e agora chega a notificação
-    // assíncrona do mesmo pagamento) -- se checkCbTransID rodasse primeiro, nosso status local
-    // ficaria parado no valor antigo para sempre, e qualquer transição seguinte neste MESMO
-    // lote de notificações nunca seria processada.
-    $alreadyPaidLocally = $charge->status === 'paid';
-
-    if (in_array($to, ['paid', 'approved'], true)) {
-        ChargeRepository::updateStatus($charge->id, 'paid');
-    } else {
+    if ($to !== 'paid') {
         ChargeRepository::updateStatus($charge->id, $to);
+        \EfiWhmcs\Ledger\EventRepository::markApplied((int) $transition['eventId']);
     }
 
-    if (in_array($to, ['paid', 'approved'], true) && !$alreadyPaidLocally) {
-        $invoiceIdChecked = checkCbInvoiceID($invoiceId, $gatewayModuleName);
-        $amount = $transition['valueCents'] !== null ? Money::toReais($transition['valueCents']) : 0;
-
-        checkCbTransID($charge->efi_charge_id);
-        addInvoicePayment($invoiceIdChecked, $charge->efi_charge_id, $amount, 0, $gatewayModuleName);
+    if ($to === 'paid') {
+        PaymentApplier::apply([
+            'invoiceId' => $invoiceId, 'transId' => (string) $charge->efi_charge_id,
+            'amountCents' => $transition['valueCents'] ?? (int) $charge->amount_cents,
+            'module' => $gatewayModuleName, 'gatewayParams' => $gatewayParams,
+            'chargeId' => (int) $charge->id, 'eventId' => (int) $transition['eventId'],
+        ]);
     }
 }
 

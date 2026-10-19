@@ -25,6 +25,7 @@ use EfiWhmcs\Support\AdminCsrf;
 use EfiWhmcs\Support\EfiClientFactory;
 use EfiWhmcs\Support\GatewayLoader;
 use EfiWhmcs\Support\GatewayLog;
+use EfiWhmcs\Support\PaymentApplier;
 use WHMCS\Database\Capsule;
 
 /**
@@ -217,6 +218,32 @@ add_hook('DailyCronJob', 1, function () {
 
     $staleSince = date('Y-m-d H:i:s', strtotime('-2 days'));
     $tooOldSince = date('Y-m-d H:i:s', strtotime('-60 days'));
+    $creatingSince = date('Y-m-d H:i:s', strtotime('-10 minutes'));
+
+    // A pre-API reservation can only be retried if the provider identifier was captured.
+    // Otherwise the external outcome is unknowable and an operator must resolve it.
+    $staleCreating = Capsule::table('mod_efi_charges')->where('status', 'creating')->where('updated_at', '<', $creatingSince)->get();
+    foreach ($staleCreating as $charge) {
+        if (empty($charge->efi_charge_id)) {
+            EfiWhmcs\Ledger\ChargeRepository::updateStatus((int) $charge->id, 'failed-unknown');
+            GatewayLog::error('efi_' . $charge->rail, [], 'Reserva de cobrança creating sem identificador Efí após 10 minutos; revisão manual necessária', ['invoice_id' => $charge->invoice_id, 'charge_id' => $charge->id]);
+            continue;
+        }
+        if ($charge->rail === 'boleto') { efi_reconcile_boleto([$charge]); }
+        if ($charge->rail === 'pix') { efi_reconcile_pix([$charge]); }
+        if ($charge->rail === 'cartao') { efi_reconcile_cartao([$charge]); }
+    }
+
+    // A crash after claiming an event leaves it pending. Re-query the provider rather than
+    // replaying its payload; the reconciliation functions generate a fresh durable claim.
+    $pendingByRail = ['boleto' => [], 'pix' => [], 'cartao' => []];
+    foreach (EfiWhmcs\Ledger\EventRepository::pendingOlderThan(10) as $event) {
+        $charge = Capsule::table('mod_efi_charges')->where('id', $event->charge_id)->first();
+        if ($charge !== null && isset($pendingByRail[$charge->rail])) { $pendingByRail[$charge->rail][$charge->id] = $charge; }
+    }
+    if ($pendingByRail['boleto'] !== []) { efi_reconcile_boleto(array_values($pendingByRail['boleto'])); }
+    if ($pendingByRail['pix'] !== []) { efi_reconcile_pix(array_values($pendingByRail['pix'])); }
+    if ($pendingByRail['cartao'] !== []) { efi_reconcile_cartao(array_values($pendingByRail['cartao'])); }
 
     $staleBoletos = Capsule::table('mod_efi_charges')
         ->where('rail', 'boleto')
@@ -272,6 +299,20 @@ add_hook('DailyCronJob', 1, function () {
 
     if ($staleAutomaticPix->isNotEmpty()) {
         efi_reconcile_pix_automatico($staleAutomaticPix);
+    }
+    $staleAutomaticCreating = Capsule::table('mod_efi_pix_auto_charges')
+        ->where('status', 'creating')->where('updated_at', '<', $creatingSince)->get();
+    foreach ($staleAutomaticCreating as $charge) {
+        if (empty($charge->efi_charge_id)) {
+            EfiWhmcs\PixAutomatic\Repository::updateCharge((int) $charge->id, ['status' => 'failed-unknown']);
+            GatewayLog::error(PixAutomaticService::GATEWAY, [], 'Reserva de CobR creating sem txid após 10 minutos; revisão manual necessária', ['invoice_id' => $charge->invoice_id, 'charge_id' => $charge->id]);
+            continue;
+        }
+        efi_reconcile_pix_automatico([$charge]);
+    }
+    $pendingAutomatic = EfiWhmcs\PixAutomatic\Repository::pendingChargeEventsOlderThan(10);
+    if ($pendingAutomatic->isNotEmpty()) {
+        efi_reconcile_pix_automatico($pendingAutomatic);
     }
 
     $automaticParams = efi_gateway_variables(PixAutomaticService::GATEWAY);
@@ -332,14 +373,15 @@ function efi_reconcile_boleto($charges): void
     foreach ($charges as $charge) {
         try {
             $detail = $api->detailCharge(['id' => $charge->efi_charge_id]);
-            $status = (string) ($detail['data']['status']['current'] ?? $detail['status'] ?? '');
+            $status = (string) ($detail['data']['status'] ?? $detail['status'] ?? '');
 
-            if ($status === 'paid' && $charge->status !== 'paid') {
+            if ($status === 'paid') {
                 logTransaction('efi_boleto', ['invoice_id' => $charge->invoice_id, 'charge_id' => $charge->efi_charge_id], 'Reconciliação diária detectou pagamento não notificado via webhook');
-                $invoiceId = checkCbInvoiceID((int) $charge->invoice_id, 'efi_boleto');
-                checkCbTransID($charge->efi_charge_id . ':reconcile');
-                addInvoicePayment($invoiceId, $charge->efi_charge_id, 0, 0, 'efi_boleto');
-                EfiWhmcs\Ledger\ChargeRepository::updateStatus($charge->id, 'paid');
+                $eventId = EfiWhmcs\Ledger\EventRepository::tryClaim((int) $charge->id, 'reconcile:' . $charge->efi_charge_id, $charge->status, 'paid', $charge->efi_charge_id);
+                if ($eventId !== null) {
+                    $amountCents = (int) ($detail['data']['value'] ?? $detail['value'] ?? $charge->amount_cents);
+                    PaymentApplier::apply(['invoiceId' => (int) $charge->invoice_id, 'transId' => (string) $charge->efi_charge_id, 'amountCents' => $amountCents, 'module' => 'efi_boleto', 'gatewayParams' => $gatewayParams, 'chargeId' => (int) $charge->id, 'eventId' => $eventId]);
+                }
             } elseif ($status !== '' && $status !== $charge->status) {
                 EfiWhmcs\Ledger\ChargeRepository::updateStatus($charge->id, $status);
             }
@@ -367,14 +409,15 @@ function efi_reconcile_cartao($charges): void
     foreach ($charges as $charge) {
         try {
             $detail = $api->detailCharge(['id' => $charge->efi_charge_id]);
-            $status = (string) ($detail['data']['status']['current'] ?? $detail['status'] ?? '');
+            $status = (string) ($detail['data']['status'] ?? $detail['status'] ?? '');
 
-            if (in_array($status, ['paid', 'approved'], true) && $charge->status !== 'paid') {
+            if ($status === 'paid') {
                 logTransaction('efi_cartao', ['invoice_id' => $charge->invoice_id, 'charge_id' => $charge->efi_charge_id], 'Reconciliação diária detectou pagamento de cartão não aplicado pelo callback');
-                $invoiceId = checkCbInvoiceID((int) $charge->invoice_id, 'efi_cartao');
-                checkCbTransID($charge->efi_charge_id . ':reconcile');
-                addInvoicePayment($invoiceId, $charge->efi_charge_id, 0, 0, 'efi_cartao');
-                EfiWhmcs\Ledger\ChargeRepository::updateStatus($charge->id, 'paid');
+                $eventId = EfiWhmcs\Ledger\EventRepository::tryClaim((int) $charge->id, 'reconcile:' . $charge->efi_charge_id, $charge->status, 'paid', $charge->efi_charge_id);
+                if ($eventId !== null) {
+                    $amountCents = (int) ($detail['data']['value'] ?? $detail['value'] ?? $charge->amount_cents);
+                    PaymentApplier::apply(['invoiceId' => (int) $charge->invoice_id, 'transId' => (string) $charge->efi_charge_id, 'amountCents' => $amountCents, 'module' => 'efi_cartao', 'gatewayParams' => $gatewayParams, 'chargeId' => (int) $charge->id, 'eventId' => $eventId]);
+                }
             } elseif ($status !== '' && $status !== $charge->status) {
                 EfiWhmcs\Ledger\ChargeRepository::updateStatus($charge->id, $status);
             }
@@ -405,24 +448,20 @@ function efi_reconcile_pix($charges): void
             $status = (string) ($detail['status'] ?? '');
             $pixRecebidos = $detail['pix'] ?? [];
 
-            if ($status === 'CONCLUIDA' && $pixRecebidos !== [] && $charge->status !== 'CONCLUIDA') {
+            if ($status === 'CONCLUIDA' && $pixRecebidos !== []) {
                 $recebido = $pixRecebidos[0];
                 $e2eId = (string) ($recebido['endToEndId'] ?? $charge->efi_charge_id);
                 logTransaction('efi_pix', ['invoice_id' => $charge->invoice_id, 'txid' => $charge->efi_charge_id], 'Reconciliação diária detectou pagamento Pix não notificado via webhook');
-                $invoiceId = checkCbInvoiceID((int) $charge->invoice_id, 'efi_pix');
-                checkCbTransID($e2eId . ':reconcile');
-                addInvoicePayment($invoiceId, $e2eId, \EfiWhmcs\Support\Money::toReais((int) round(((float) $recebido['valor']) * 100)), 0, 'efi_pix');
-
                 $metadata = json_decode((string) $charge->metadata, true) ?: [];
                 $metadata['e2e_id'] = $e2eId;
-                EfiWhmcs\Ledger\ChargeRepository::replacePixCharge(
-                    $charge->id,
-                    $charge->efi_charge_id,
-                    $charge->efi_loc_id,
-                    'CONCLUIDA',
-                    (int) $charge->amount_cents,
-                    json_encode($metadata) ?: '{}'
-                );
+                $eventId = EfiWhmcs\Ledger\EventRepository::tryClaim((int) $charge->id, 'reconcile:' . $e2eId, $charge->status, 'CONCLUIDA', $charge->efi_charge_id);
+                if ($eventId !== null) {
+                    PaymentApplier::apply([
+                        'invoiceId' => (int) $charge->invoice_id, 'transId' => $e2eId, 'amountCents' => (int) round(((float) $recebido['valor']) * 100),
+                        'module' => 'efi_pix', 'gatewayParams' => $gatewayParams, 'eventId' => $eventId,
+                        'markPaid' => static function () use ($charge, $metadata): void { EfiWhmcs\Ledger\ChargeRepository::updateMetadata((int) $charge->id, json_encode($metadata) ?: '{}'); EfiWhmcs\Ledger\ChargeRepository::updateStatus((int) $charge->id, 'CONCLUIDA'); },
+                    ]);
+                }
             }
         } catch (\Throwable $e) {
             GatewayLog::error('efi_pix', $gatewayParams, 'Reconciliação diária falhou para txid ' . $charge->efi_charge_id, $e->getMessage());
@@ -460,18 +499,15 @@ function efi_reconcile_pix_automatico($charges): void
 
             if ($status === 'CONCLUIDA' && $settled !== null && !empty($settled['endToEndId'])) {
                 $e2eId = (string) $settled['endToEndId'];
-                if (!EfiWhmcs\PixAutomatic\Repository::tryClaimEvent('charge', (int) $charge->id, $e2eId, $charge->status, $status)) {
-                    continue;
-                }
-
-                $invoiceId = checkCbInvoiceID((int) $charge->invoice_id, PixAutomaticService::GATEWAY);
-                checkCbTransID($e2eId);
-                addInvoicePayment($invoiceId, $e2eId, EfiWhmcs\Support\Money::toReais((int) $charge->amount_cents), 0, PixAutomaticService::GATEWAY);
-                EfiWhmcs\PixAutomatic\Repository::updateCharge((int) $charge->id, [
-                    'status' => $status,
-                    'metadata' => json_encode(['e2e_id' => $e2eId]) ?: '{}',
+                $eventId = EfiWhmcs\PixAutomatic\Repository::tryClaimEvent('charge', (int) $charge->id, $e2eId, $charge->status, $status);
+                if ($eventId === null) { continue; }
+                PaymentApplier::apply([
+                    'invoiceId' => (int) $charge->invoice_id, 'transId' => $e2eId, 'amountCents' => isset($settled['valor']) ? (int) round(((float) $settled['valor']) * 100) : (int) $charge->amount_cents,
+                    'module' => PixAutomaticService::GATEWAY, 'gatewayParams' => $gatewayParams,
+                    'markPaid' => static function () use ($charge, $status, $e2eId): void { EfiWhmcs\PixAutomatic\Repository::updateCharge((int) $charge->id, ['status' => $status, 'metadata' => json_encode(['e2e_id' => $e2eId]) ?: '{}']); },
+                    'markApplied' => static function () use ($eventId): void { EfiWhmcs\PixAutomatic\Repository::markEventApplied($eventId); },
                 ]);
-                logTransaction(PixAutomaticService::GATEWAY, ['invoice_id' => $invoiceId, 'txid' => $charge->efi_charge_id, 'e2eId' => $e2eId], 'Reconciliação diária detectou cobrança Pix Automático concluída');
+                logTransaction(PixAutomaticService::GATEWAY, ['invoice_id' => $charge->invoice_id, 'txid' => $charge->efi_charge_id, 'e2eId' => $e2eId], 'Reconciliação diária detectou cobrança Pix Automático concluída');
             } elseif ($status !== '' && $status !== $charge->status) {
                 EfiWhmcs\PixAutomatic\Repository::updateCharge((int) $charge->id, ['status' => $status]);
             }

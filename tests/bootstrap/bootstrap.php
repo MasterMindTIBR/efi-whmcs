@@ -18,6 +18,10 @@ if (!defined('WHMCS')) {
     define('WHMCS', true);
 }
 
+final class TestCapsule extends IlluminateCapsule
+{
+}
+
 // `WHMCS\Database\Capsule` é uma classe real do core do WHMCS (subclasse do Capsule Manager da
 // Illuminate com os mesmos métodos estáticos `::table()`/`::schema()`/`::connection()`). Fora do
 // WHMCS ela não existe; para os testes, uma classe equivalente é suficiente -- nosso código de
@@ -26,22 +30,19 @@ if (!class_exists(\WHMCS\Database\Capsule::class)) {
     class_alias(TestCapsule::class, \WHMCS\Database\Capsule::class);
 }
 
-final class TestCapsule extends IlluminateCapsule
-{
-}
-
 function efi_test_boot_database(): void
 {
     $capsule = new TestCapsule();
 
     if ((getenv('EFI_TEST_DB') ?: 'sqlite') === 'mysql') {
+        $mysqlPassword = getenv('EFI_TEST_MYSQL_PASSWORD');
         $capsule->addConnection([
             'driver' => 'mysql',
             'host' => getenv('EFI_TEST_MYSQL_HOST') ?: '127.0.0.1',
             'port' => getenv('EFI_TEST_MYSQL_PORT') ?: '3306',
             'database' => getenv('EFI_TEST_MYSQL_DB') ?: 'efi_test',
             'username' => getenv('EFI_TEST_MYSQL_USER') ?: 'root',
-            'password' => getenv('EFI_TEST_MYSQL_PASSWORD') ?: 'root',
+            'password' => $mysqlPassword === false ? '' : $mysqlPassword,
             'charset' => 'utf8mb4',
             'collation' => 'utf8mb4_unicode_ci',
         ]);

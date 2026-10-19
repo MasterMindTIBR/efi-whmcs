@@ -57,7 +57,7 @@ final class PixNotificationProcessor
                 continue;
             }
 
-            $claimed = EventRepository::tryClaim($charge->id, $e2eId, $charge->status, 'CONCLUIDA');
+            $claimed = EventRepository::tryClaim($charge->id, $e2eId, $charge->status, 'CONCLUIDA', $txid);
 
             if (!$claimed) {
                 continue; // reentrega -- já processado.
@@ -94,6 +94,7 @@ final class PixNotificationProcessor
 
             $transitions[] = [
                 'charge' => $charge,
+                'eventId' => $claimed,
                 'status' => (string) ($detail['status'] ?? 'CONCLUIDA'),
                 'valueCents' => (int) round(((float) $confirmed['valor']) * 100),
                 'e2eId' => $e2eId,

@@ -1,40 +1,69 @@
 <?php
 
+declare(strict_types=1);
+
 namespace EfiWhmcs\Ledger;
 
 use WHMCS\Database\Capsule;
 
 /**
  * Garante idempotência real de processamento de notificação: cada (charge_id, efi_event_key) só
- * é aplicado uma vez, mesmo que a Efí reenvie a notificação (o que ela documenta que fará até
- * que o token/consulta seja concluído com sucesso).
+ * produz efeito uma única vez, mesmo que a Efí reenvie a notificação (o que ela documenta que
+ * fará até que o token/consulta seja concluído com sucesso) ou que o cron reconcilie a mesma
+ * cobrança mais de uma vez.
  *
- * `efi_event_key` é o `id` sequencial da notificação (Cobranças: boleto/cartão) OU o `e2eid`
- * (Pix) -- ambos tratados como string opaca aqui.
+ * `efi_event_key` é o `id` sequencial da notificação (Cobranças: boleto/cartão), o `e2eid`
+ * (Pix) ou uma chave determinística de reconciliação (`'reconcile:' . charge_id`) -- sempre
+ * tratado como string opaca aqui.
  */
 final class EventRepository
 {
     /**
-     * Tenta registrar o evento. Retorna true se este processo é quem deve aplicá-lo agora
-     * (primeira vez), false se já havia sido processado antes (no-op seguro).
+     * Tenta registrar o evento com status `pending`. Retorna o id da linha a ser aplicada por
+     * `PaymentApplier`, ou `null` SOMENTE quando a mesma chave já está `applied` (efeito já
+     * produzido, no-op seguro). Uma colisão cuja linha existente ainda está `pending` (por
+     * exemplo, uma tentativa anterior que falhou ao obter o lock da fatura e nunca marcou o
+     * evento como aplicado) devolve o id dessa linha existente, para que o chamador tente
+     * aplicar de novo -- é assim que o cron recupera um evento preso em `pending`.
      */
-    public static function tryClaim(int $chargeId, string $eventKey, ?string $statusFrom, string $statusTo): bool
+    public static function tryClaim(int $chargeId, string $eventKey, ?string $statusFrom, string $statusTo, ?string $efiChargeId = null): ?int
     {
-        Schema::ensure();
-
         try {
-            Capsule::table('mod_efi_events')->insert([
+            return (int) Capsule::table('mod_efi_events')->insertGetId([
                 'charge_id' => $chargeId,
+                'efi_charge_id' => $efiChargeId,
                 'efi_event_key' => $eventKey,
                 'status_from' => $statusFrom,
                 'status_to' => $statusTo,
+                'status' => 'pending',
                 'received_at' => date('Y-m-d H:i:s'),
             ]);
+        } catch (\Throwable $e) {
+            $code = (string) $e->getCode();
 
-            return true;
-        } catch (\Exception $e) {
-            // Violação da UNIQUE(charge_id, efi_event_key) => evento já processado antes.
-            return false;
+            if ($code !== '23000' && $code !== '1062') {
+                throw $e;
+            }
+
+            $existing = Capsule::table('mod_efi_events')
+                ->where('charge_id', $chargeId)
+                ->where('efi_event_key', $eventKey)
+                ->first(['id', 'status']);
+
+            return $existing !== null && $existing->status === 'pending' ? (int) $existing->id : null;
         }
+    }
+
+    public static function markApplied(int $eventRowId): void
+    {
+        Capsule::table('mod_efi_events')->where('id', $eventRowId)->update(['status' => 'applied']);
+    }
+
+    /** @return iterable<object> */
+    public static function pendingOlderThan(int $minutes): iterable
+    {
+        return Capsule::table('mod_efi_events')->where('status', 'pending')
+            ->where('received_at', '<', date('Y-m-d H:i:s', strtotime('-' . max(1, $minutes) . ' minutes')))
+            ->get();
     }
 }
