@@ -4,6 +4,7 @@ namespace EfiWhmcs\Support;
 
 use DateInterval;
 use DateTime;
+use DateTimeZone;
 
 /**
  * Cálculo de vencimento do boleto e realinhamento quando a fatura WHMCS muda de data.
@@ -26,7 +27,7 @@ final class DueDate
     public static function forCreation(string $invoiceDueDate, int $offsetDays): string
     {
         $base = self::parse($invoiceDueDate);
-        $today = new DateTime('today');
+        $today = new DateTime('today', self::timezone());
 
         // Se a fatura já está vencida no momento da emissão, usa hoje como base -- não faz
         // sentido pedir à Efí um boleto com vencimento no passado.
@@ -52,12 +53,12 @@ final class DueDate
      */
     public static function isAcceptableByEfi(string $candidateDate): bool
     {
-        return self::parse($candidateDate) > new DateTime('today');
+        return self::parse($candidateDate) > new DateTime('today', self::timezone());
     }
 
     private static function parse(string $date): DateTime
     {
-        $parsed = DateTime::createFromFormat('Y-m-d', $date);
+        $parsed = DateTime::createFromFormat('!Y-m-d', $date, self::timezone());
 
         if ($parsed === false) {
             throw new \InvalidArgumentException("Data inválida (esperado Y-m-d): {$date}");
@@ -79,5 +80,10 @@ final class DueDate
         }
 
         return $clone;
+    }
+
+    private static function timezone(): DateTimeZone
+    {
+        return new DateTimeZone('America/Sao_Paulo');
     }
 }

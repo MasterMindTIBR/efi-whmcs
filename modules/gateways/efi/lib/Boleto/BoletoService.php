@@ -9,6 +9,7 @@ use EfiWhmcs\Support\CustomerResolver;
 use EfiWhmcs\Support\DueDate;
 use EfiWhmcs\Support\GatewayLog;
 use EfiWhmcs\Support\Money;
+use WHMCS\Database\Capsule;
 
 /**
  * Regras de negócio do boleto: emissão one-step, realinhamento de vencimento e cancelamento.
@@ -39,59 +40,99 @@ final class BoletoService
         int $totalAmountCents,
         ?string $companyName = null
     ): array {
-        $existing = ChargeRepository::findByInvoiceAndRail($invoiceId, self::RAIL);
-
-        if ($existing !== null && $existing->status !== 'canceled') {
-            return $this->presentExisting($existing);
-        }
-
-        $offsetDays = (int) ($this->gatewayParams['due_days_offset'] ?? 0);
-        $expireAt = DueDate::forCreation($invoiceDueDate, $offsetDays);
-
-        $body = $this->buildOneStepBody($invoiceId, $expireAt, $items, $customerName, $documentDigitsOnly, $companyName);
+        $locked = false;
 
         try {
-            $response = $this->api->createOneStepCharge([], $body);
-        } catch (EfiException $e) {
-            GatewayLog::error('efi_boleto', $this->gatewayParams, 'Falha ao emitir boleto (' . $e->code . ')', [
-                'error' => $e->error,
-                'description' => $e->errorDescription,
-                'invoice' => $invoiceId,
+            $locked = $this->lockInvoice($invoiceId);
+            if (!$locked) {
+                GatewayLog::error('efi_boleto', $this->gatewayParams, 'Falha ao obter trava da fatura; boleto não foi emitido', [
+                    'invoice_id' => $invoiceId,
+                ]);
+                throw new \RuntimeException('Não foi possível reservar a emissão do boleto. Tente novamente em instantes.');
+            }
+
+            $existing = ChargeRepository::findByInvoiceAndRail($invoiceId, self::RAIL);
+
+            if ($existing !== null && $existing->status === 'creating') {
+                // Uma emissão anterior travou (processo morto entre a reserva e a chamada à
+                // API) e ainda não passou pela janela de 10 minutos do cron -- não sabemos se a
+                // Efí chegou a criar a cobrança. Nunca reemitir às cegas aqui.
+                return [
+                    'status' => 'creating',
+                    'local_id' => $existing->id,
+                    'message' => 'A emissão deste boleto está em andamento. Atualize a página em alguns instantes.',
+                ];
+            }
+
+            if ($existing !== null && $existing->status === 'failed-unknown') {
+                return [
+                    'status' => 'failed-unknown',
+                    'local_id' => $existing->id,
+                    'message' => 'Não foi possível confirmar a emissão deste boleto. Entre em contato com o suporte antes de tentar novamente.',
+                ];
+            }
+
+            if ($existing !== null && !in_array($existing->status, ['canceled', 'expired'], true)) {
+                return $this->presentExisting($existing);
+            }
+
+            $offsetDays = (int) ($this->gatewayParams['due_days_offset'] ?? 0);
+            $expireAt = DueDate::forCreation($invoiceDueDate, $offsetDays);
+            $chargedAmountCents = $this->discountedAmountCents($totalAmountCents);
+            $localId = ChargeRepository::reserveCreating($invoiceId, self::RAIL, $chargedAmountCents);
+            $body = $this->buildOneStepBody($invoiceId, $expireAt, $items, $customerName, $documentDigitsOnly, $companyName);
+
+            try {
+                $response = $this->api->createOneStepCharge([], $body);
+            } catch (EfiException $e) {
+                GatewayLog::error('efi_boleto', $this->gatewayParams, 'Falha ao emitir boleto (' . $e->code . ')', [
+                    'error' => $e->error,
+                    'description' => $e->errorDescription,
+                    'invoice' => $invoiceId,
+                ]);
+
+                throw new \RuntimeException('Não foi possível emitir o boleto: ' . $e->errorDescription);
+            }
+
+            $data = $response['data'] ?? $response;
+            $chargeId = (string) ($data['charge_id'] ?? '');
+
+            if ($chargeId === '') {
+                GatewayLog::error('efi_boleto', $this->gatewayParams, 'Resposta de emissão sem charge_id', $response);
+                throw new \RuntimeException('A Efí não retornou um identificador de cobrança válido.');
+            }
+
+            $billet = $this->extractBilletData($data);
+            $barcode = $billet['barcode'];
+            $link = $billet['link'];
+            $status = (string) ($data['status'] ?? 'waiting');
+
+            ChargeRepository::updateStatus($localId, $status, $chargeId);
+            ChargeRepository::updateCharge($localId, [
+                'due_offset_days' => $offsetDays,
+                'metadata' => json_encode([
+                    'base_amount_cents' => $totalAmountCents,
+                    'expire_at' => $expireAt,
+                    'link' => $link,
+                    'barcode' => $barcode,
+                ]) ?: '{}',
             ]);
 
-            throw new \RuntimeException('Não foi possível emitir o boleto: ' . $e->errorDescription);
+            GatewayLog::debug('efi_boleto', $this->gatewayParams, 'Boleto emitido', $response);
+
+            return [
+                'charge_id' => $chargeId,
+                'status' => $status,
+                'expire_at' => $expireAt,
+                'barcode' => $barcode,
+                'link' => $link,
+                'local_id' => $localId,
+            ];
+        } finally {
+            if ($locked) {
+                $this->unlockInvoice($invoiceId);
+            }
         }
-
-        $data = $response['data'] ?? $response;
-        $chargeId = (string) ($data['charge_id'] ?? '');
-
-        if ($chargeId === '') {
-            GatewayLog::error('efi_boleto', $this->gatewayParams, 'Resposta de emissão sem charge_id', $response);
-            throw new \RuntimeException('A Efí não retornou um identificador de cobrança válido.');
-        }
-
-        $billet = $this->extractBilletData($data);
-        $barcode = $billet['barcode'];
-        $link = $billet['link'];
-
-        $localId = ChargeRepository::reissue($invoiceId, self::RAIL, [
-            'efi_charge_id' => $chargeId,
-            'status' => (string) ($data['status'] ?? 'waiting'),
-            'amount_cents' => $totalAmountCents,
-            'due_offset_days' => $offsetDays,
-            'metadata' => json_encode(['expire_at' => $expireAt, 'link' => $link, 'barcode' => $barcode]),
-        ]);
-
-        GatewayLog::debug('efi_boleto', $this->gatewayParams, 'Boleto emitido', $response);
-
-        return [
-            'charge_id' => $chargeId,
-            'status' => (string) ($data['status'] ?? 'waiting'),
-            'expire_at' => $expireAt,
-            'barcode' => $barcode,
-            'link' => $link,
-            'local_id' => $localId,
-        ];
     }
 
     /**
@@ -102,7 +143,8 @@ final class BoletoService
      * VALOR de um boleto já emitido. Quando o total da fatura muda (multa, desconto, crédito,
      * item novo), a única ação segura é cancelar o boleto com o valor antigo; a próxima vez que
      * `_link()` rodar (cliente reabre a fatura, ou o admin) emite um boleto novo já com o valor e
-     * o vencimento corretos -- `issueOrFetch()` reemite sempre que o existente está `canceled`.
+     * o vencimento corretos -- `issueOrFetch()` reemite sempre que o existente está `canceled`
+     * ou `expired`.
      *
      * @return string|null null se nada precisou ser feito; caso contrário, uma mensagem de
      *                      diagnóstico (sucesso ou motivo de não ter sido possível realinhar).
@@ -179,6 +221,56 @@ final class BoletoService
                 'invoice' => $invoiceId,
             ]);
         }
+    }
+
+    /**
+     * Lança o desconto já concedido pela Efí como item negativo somente quando o valor
+     * confirmado pelo provedor é exatamente o valor que esta cobrança esperava receber.
+     */
+    public function applyDiscountLineItem(int $invoiceId, int $receivedAmountCents, object $charge): void
+    {
+        $metadata = json_decode((string) $charge->metadata, true) ?: [];
+        $discountCents = self::discountCentsForPayment($metadata, (int) $charge->amount_cents, $receivedAmountCents);
+
+        if ($discountCents === null) {
+            GatewayLog::error('efi_boleto', $this->gatewayParams, 'Valor do boleto confirmado diverge da cobrança esperada; pagamento será aplicado sem desconto automático', [
+                'invoice_id' => $invoiceId,
+                'charge_id' => $charge->id,
+                'expected_amount_cents' => (int) $charge->amount_cents,
+                'received_amount_cents' => $receivedAmountCents,
+            ]);
+            return;
+        }
+
+        if ($discountCents <= 0) {
+            return;
+        }
+
+        $result = localAPI('UpdateInvoice', [
+            'invoiceid' => $invoiceId,
+            'newitemdescription' => ['Desconto Boleto'],
+            'newitemamount' => [-Money::toReais($discountCents)],
+            'newitemtaxed' => [false],
+        ], null);
+
+        if (($result['result'] ?? '') !== 'success') {
+            GatewayLog::error('efi_boleto', $this->gatewayParams, 'Falha ao lançar item de desconto Boleto na fatura', [
+                'invoice_id' => $invoiceId,
+                'result' => $result,
+            ]);
+        }
+    }
+
+    /** Returns null if the Efí-confirmed amount differs from the amount issued. */
+    public static function discountCentsForPayment(array $metadata, int $expectedAmountCents, int $receivedAmountCents): ?int
+    {
+        if ($receivedAmountCents !== $expectedAmountCents || !isset($metadata['base_amount_cents'])) {
+            return null;
+        }
+
+        $discountCents = (int) $metadata['base_amount_cents'] - $expectedAmountCents;
+
+        return $discountCents >= 0 ? $discountCents : null;
     }
 
     private function presentExisting(object $charge): array
@@ -315,6 +407,40 @@ final class BoletoService
         return $type === 'percentage'
             ? ['type' => 'percentage', 'value' => (int) round($value * 100)]
             : ['type' => 'currency', 'value' => Money::toCents($value)];
+    }
+
+    private function discountedAmountCents(int $baseAmountCents): int
+    {
+        $type = $this->gatewayParams['discount_type'] ?? 'none';
+        $value = (float) ($this->gatewayParams['discount_value'] ?? 0);
+
+        if ($type === 'none' || $value <= 0) {
+            return $baseAmountCents;
+        }
+
+        $discountCents = $type === 'percentage'
+            ? (int) round($baseAmountCents * $value / 100)
+            : Money::toCents($value);
+
+        return max(0, $baseAmountCents - $discountCents);
+    }
+
+    private function lockInvoice(int $invoiceId): bool
+    {
+        if (Capsule::connection()->getDriverName() !== 'mysql') {
+            return true;
+        }
+
+        $row = Capsule::selectOne('SELECT GET_LOCK(?, 5) AS acquired', ['efi_invoice_' . $invoiceId]);
+
+        return $row !== null && (int) ($row->acquired ?? 0) === 1;
+    }
+
+    private function unlockInvoice(int $invoiceId): void
+    {
+        if (Capsule::connection()->getDriverName() === 'mysql') {
+            Capsule::select('SELECT RELEASE_LOCK(?)', ['efi_invoice_' . $invoiceId]);
+        }
     }
 
     private function notificationUrl(): string

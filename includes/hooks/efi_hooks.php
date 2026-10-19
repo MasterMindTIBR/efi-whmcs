@@ -73,7 +73,7 @@ add_hook('InvoiceCancelled', 1, function ($vars) {
 });
 
 /**
- * Mesmo tratamento para InvoicePaid, InvoiceDeleted e InvoiceRefunded: uma fatura que sai do
+ * Mesmo tratamento para InvoicePaid e InvoiceRefunded: uma fatura que sai do
  * ciclo de cobrança por qualquer motivo não pode deixar boleto, Pix ou CobR em aberto -- é
  * assim que a mesma fatura acaba sendo paga duas vezes (uma por outro meio, outra quando o
  * cliente ainda consegue pagar a cobrança Efí esquecida). Reusa exatamente a mesma lógica do
@@ -120,10 +120,6 @@ add_hook('InvoiceRefunded', 1, function ($vars) {
     efi_cancel_open_charges((int) ($vars['invoiceid'] ?? 0));
 });
 
-add_hook('InvoiceDeleted', 1, function ($vars) {
-    efi_cancel_open_charges((int) ($vars['invoiceid'] ?? 0));
-});
-
 add_hook('InvoiceCreated', 1, function ($vars) {
     $invoiceId = (int) ($vars['invoiceid'] ?? 0);
     $invoice = Capsule::table('tblinvoices')->where('id', $invoiceId)->first(['id', 'userid', 'paymentmethod', 'status', 'total', 'duedate']);
@@ -166,7 +162,7 @@ add_hook('UpdateInvoiceTotal', 1, function ($vars) {
     if ($boletoParams !== null) {
         try {
             $api = EfiClientFactory::make($boletoParams);
-            $message = (new BoletoService($api, $boletoParams))->realignDueDate($invoiceId, $invoice->duedate, EfiWhmcs\Support\Money::toCents($invoice->total));
+            $message = (new BoletoService($api, $boletoParams))->realignDueDate($invoiceId, $invoice->duedate, EfiWhmcs\Support\InvoiceBalance::centsDue($invoiceId));
 
             if ($message !== null) {
                 logTransaction('efi_boleto', ['invoice_id' => $invoiceId, 'new_duedate' => $invoice->duedate], $message);
@@ -370,6 +366,8 @@ function efi_reconcile_boleto($charges): void
         return;
     }
 
+    $boletoService = new BoletoService($api, $gatewayParams);
+
     foreach ($charges as $charge) {
         try {
             $detail = $api->detailCharge(['id' => $charge->efi_charge_id]);
@@ -380,7 +378,15 @@ function efi_reconcile_boleto($charges): void
                 $eventId = EfiWhmcs\Ledger\EventRepository::tryClaim((int) $charge->id, 'reconcile:' . $charge->efi_charge_id, $charge->status, 'paid', $charge->efi_charge_id);
                 if ($eventId !== null) {
                     $amountCents = (int) ($detail['data']['value'] ?? $detail['value'] ?? $charge->amount_cents);
-                    PaymentApplier::apply(['invoiceId' => (int) $charge->invoice_id, 'transId' => (string) $charge->efi_charge_id, 'amountCents' => $amountCents, 'module' => 'efi_boleto', 'gatewayParams' => $gatewayParams, 'chargeId' => (int) $charge->id, 'eventId' => $eventId]);
+                    PaymentApplier::apply([
+                        'invoiceId' => (int) $charge->invoice_id, 'transId' => (string) $charge->efi_charge_id,
+                        'amountCents' => $amountCents, 'module' => 'efi_boleto', 'gatewayParams' => $gatewayParams,
+                        'eventId' => $eventId,
+                        'markPaid' => static function () use ($boletoService, $charge, $amountCents): void {
+                            $boletoService->applyDiscountLineItem((int) $charge->invoice_id, $amountCents, $charge);
+                            EfiWhmcs\Ledger\ChargeRepository::updateStatus((int) $charge->id, 'paid');
+                        },
+                    ]);
                 }
             } elseif ($status !== '' && $status !== $charge->status) {
                 EfiWhmcs\Ledger\ChargeRepository::updateStatus($charge->id, $status);

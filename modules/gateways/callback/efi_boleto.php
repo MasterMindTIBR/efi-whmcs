@@ -48,7 +48,7 @@ try {
     die('error');
 }
 
-efi_boleto_apply_transitions($transitions, $gatewayModuleName, $gatewayParams);
+    efi_boleto_apply_transitions($transitions, $api, $gatewayModuleName, $gatewayParams);
 
 http_response_code(200);
 echo 'ok';
@@ -56,8 +56,10 @@ echo 'ok';
 /**
  * @param array $transitions ver ChargeNotificationProcessor::fetchNewTransitions
  */
-function efi_boleto_apply_transitions(array $transitions, string $gatewayModuleName, array $gatewayParams): void
+function efi_boleto_apply_transitions(array $transitions, \Efi\EfiPay $api, string $gatewayModuleName, array $gatewayParams): void
 {
+    $boletoService = new BoletoService($api, $gatewayParams);
+
     foreach ($transitions as $transition) {
         $charge = $transition['charge'];
         $invoiceId = (int) $charge->invoice_id;
@@ -77,7 +79,12 @@ function efi_boleto_apply_transitions(array $transitions, string $gatewayModuleN
                     'invoiceId' => $invoiceId, 'transId' => (string) $charge->efi_charge_id,
                     'amountCents' => $transition['valueCents'] ?? (int) $charge->amount_cents,
                     'module' => $gatewayModuleName, 'gatewayParams' => $gatewayParams,
-                    'chargeId' => (int) $charge->id, 'eventId' => (int) $transition['eventId'],
+                    'eventId' => (int) $transition['eventId'],
+                    'markPaid' => static function () use ($boletoService, $invoiceId, $charge, $transition): void {
+                        $amountCents = $transition['valueCents'] ?? (int) $charge->amount_cents;
+                        $boletoService->applyDiscountLineItem($invoiceId, $amountCents, $charge);
+                        ChargeRepository::updateStatus((int) $charge->id, 'paid');
+                    },
                 ]);
                 break;
 

@@ -12,6 +12,7 @@ use EfiWhmcs\Ledger\Schema as EfiSchema;
 use EfiWhmcs\Support\CustomerResolver;
 use EfiWhmcs\Support\EfiClientFactory;
 use EfiWhmcs\Support\GatewayLog;
+use EfiWhmcs\Support\InvoiceBalance;
 use EfiWhmcs\Support\Money;
 
 if (!defined('WHMCS')) {
@@ -136,7 +137,7 @@ function efi_boleto_link($params)
     $service = new BoletoService($api, $params);
     $invoiceId = (int) $params['invoiceid'];
 
-    $documentDigits = CustomerResolver::documentFromCustomField(
+    $customFieldDocument = CustomerResolver::documentFromCustomField(
         (int) $params['clientdetails']['userid'],
         $params['document_field_name'] ?? null
     );
@@ -145,13 +146,16 @@ function efi_boleto_link($params)
         ? CustomerResolver::onlyDigits((string) $_POST['efi_document'])
         : null;
 
-    $documentDigits = $documentDigits ?: $postedDocument;
+    $documentDigits = CustomerResolver::isValidCpfOrCnpj((string) $customFieldDocument)
+        ? $customFieldDocument
+        : $postedDocument;
 
     if ($documentDigits === null || !CustomerResolver::isValidCpfOrCnpj($documentDigits)) {
-        return efi_boleto_render_document_form($params, $documentDigits !== null);
+        return efi_boleto_render_document_form($params, $customFieldDocument !== null || $postedDocument !== null);
     }
 
     $customerName = trim($params['clientdetails']['firstname'] . ' ' . $params['clientdetails']['lastname']);
+    $amountCents = InvoiceBalance::centsDue($invoiceId);
 
     try {
         $result = $service->issueOrFetch(
@@ -160,11 +164,11 @@ function efi_boleto_link($params)
             [[
                 'name' => 'Fatura #' . $invoiceId . ' - ' . $params['companyname'],
                 'amount' => 1,
-                'value_cents' => Money::toCents($params['amount']),
+                'value_cents' => $amountCents,
             ]],
             $customerName,
             $documentDigits,
-            Money::toCents($params['amount']),
+            $amountCents,
             $params['clientdetails']['companyname'] ?? null
         );
     } catch (\Throwable $e) {
@@ -201,6 +205,10 @@ function efi_boleto_render_document_form($params, bool $invalidAttempt): string
 
 function efi_boleto_render_result(array $result): string
 {
+    if (isset($result['message']) && in_array($result['status'], ['creating', 'failed-unknown'], true)) {
+        return '<div class="efi-boleto-box"><p>' . htmlspecialchars($result['message']) . '</p></div>';
+    }
+
     $status = htmlspecialchars($result['status']);
     $expireAt = htmlspecialchars((string) $result['expire_at']);
 
