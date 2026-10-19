@@ -48,7 +48,7 @@ try {
     die('error');
 }
 
-    efi_boleto_apply_transitions($transitions, $api, $gatewayModuleName, $gatewayParams);
+efi_boleto_apply_transitions($transitions, $api, $gatewayModuleName, $gatewayParams);
 
 http_response_code(200);
 echo 'ok';
